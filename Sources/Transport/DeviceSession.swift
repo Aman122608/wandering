@@ -221,6 +221,19 @@ final class DeviceSession: ObservableObject, LocationSink {
         }
     }
 
+    /// One measurement before connecting: does the swap target keep the socket open?
+    ///
+    /// Only `10.7.0.1:49152` is checked. If it refuses, nothing else on this device
+    /// answers, and walking the full candidate list just costs seconds per attempt.
+    private func probeTunnel() {
+        var buffer = [CChar](repeating: 0, count: 256)
+        let swapTarget = "10.7.0.1"
+        _ = swapTarget.withCString { wd_probe_tunnel($0, 49152, &buffer, 256) }
+        let report = String(cString: buffer)
+        DiagLog.shared.log("probe \(swapTarget):49152 — \(report)")
+        lastProbeWaitedForUs = report.contains("waits for us")
+    }
+
     func disconnect() {
         cancelIdleClose()
         isStreaming = false
