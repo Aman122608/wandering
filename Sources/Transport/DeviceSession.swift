@@ -79,8 +79,17 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var pairingEntries: [PairingStore.Entry] = []
     /// Why the last import did nothing — surfaced to the user instead of failing silently.
     @Published var importError: String?
+    /// What the phone's own CoreLocation said after the last write.
+    @Published private(set) var lastVerification: Verification?
     /// Second backend: lockdownd's developer service needs no pairing at all.
     let lockdown = LockdownTransport()
+    /// One measured answer about whether a write actually moved the device.
+    struct Verification: Equatable {
+        let offsetMeters: Double
+        let checkedAt: Date
+        var tookEffect: Bool { offsetMeters < 60 }
+    }
+
     /// Supplies the phone's own CoreLocation fix, so a write can be confirmed
     /// rather than merely reported as accepted.
     var fixProbe: (() -> (CLLocationCoordinate2D?, Date?))?
@@ -301,6 +310,7 @@ final class DeviceSession: ObservableObject, LocationSink {
                 return
             }
             let away = Geo.distance(fix, target)
+            self?.lastVerification = Verification(offsetMeters: away, checkedAt: Date())
             if away < 60 {
                 DiagLog.shared.note("verify: device reports the target "
                                     + "(\(Int(away))m off) — write took effect")

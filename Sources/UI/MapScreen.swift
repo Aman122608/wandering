@@ -10,6 +10,8 @@ struct MapScreen: View {
     @State private var pendingTitle: String = ""
     @StateObject private var pinBroker = PinBroker.shared
     @State private var pinEntry = ""
+    @State private var showGuide = false
+    @AppStorage("hasSeenGuide") private var hasSeenGuide = false
 
     var body: some View {
         MapReader { proxy in
@@ -34,7 +36,21 @@ struct MapScreen: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { topBar }
-        .safeAreaInset(edge: .bottom, spacing: 0) { controlPanel }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: Tokens.s2) {
+                statusCard
+                controlPanel
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showGuide = true } label: { Image(systemName: "questionmark.circle") }
+            }
+        }
+        .sheet(isPresented: $showGuide) { guideSheet }
+        .onAppear {
+            if !hasSeenGuide { showGuide = true; hasSeenGuide = true }
+        }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsScreen() }
         .sheet(isPresented: $showSettings) { SettingsScreen() }
         .sheet(isPresented: $pinBroker.isWaiting) { pinPrompt }
@@ -51,6 +67,123 @@ struct MapScreen: View {
         }
         .overlay(alignment: .top) { searchResultsOverlay }
         .overlay(alignment: .center) { pendingPinCard }
+    }
+
+    // MARK: - Status
+
+    /// One line that answers the only question that matters: is the phone reporting
+    /// somewhere else, and did we check.
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Tokens.s2) {
+                Circle()
+                    .fill(statusTone)
+                    .frame(width: 8, height: 8)
+                Text(statusTitle).font(Tokens.body(15))
+                Spacer()
+                if let verification = state.session.lastVerification {
+                    Text(String(format: "%.0f m off", verification.offsetMeters))
+                        .font(Tokens.mono(12))
+                        .foregroundStyle(verification.tookEffect ? Tokens.live : Tokens.danger)
+                }
+            }
+            if let detail = statusDetail {
+                Text(detail)
+                    .font(Tokens.caption)
+                    .foregroundStyle(Tokens.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(Tokens.s3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Tokens.surfaceRaised, in: RoundedRectangle(cornerRadius: Tokens.rMedium))
+        .padding(.horizontal, Tokens.s3)
+    }
+
+    private var statusTone: Color {
+        if let verification = state.session.lastVerification, !verification.tookEffect {
+            return Tokens.danger
+        }
+        if state.isLive { return Tokens.live }
+        if case .failed = state.session.connection { return Tokens.danger }
+        return Tokens.inkSecondary
+    }
+
+    private var statusTitle: String {
+        if let verification = state.session.lastVerification, !verification.tookEffect {
+            return "Write accepted, device did not move"
+        }
+        if state.isLive { return "Simulating" }
+        if case .failed = state.session.connection { return "Not connected" }
+        return "Not simulating"
+    }
+
+    private var statusDetail: String? {
+        if let verification = state.session.lastVerification, !verification.tookEffect {
+            return "The developer service took the coordinate but CoreLocation kept the "
+                 + "real position. Send the log — this is the case worth chasing."
+        }
+        if let target = state.player.current ?? state.waypoints.first?.coordinate {
+            let base = String(format: "Target %.5f, %.5f", target.latitude, target.longitude)
+            if state.isLive, state.session.connection.isReady {
+                return base + " · tunnel held open. Check Maps or Find My now; the phone's "
+                     + "own location service already reports this point."
+            }
+            return base
+        }
+        return "Tap the map to drop a pin, then Simulate. Or search an address below."
+    }
+
+    // MARK: - Guide
+
+    private var guideSheet: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Tokens.s4) {
+                Text("How this works").font(Tokens.heading(22))
+                Text("Wandering moves the phone's own location, so every app follows — Maps, "
+                     + "Find My, Life360. There is no server and no account.")
+                    .font(Tokens.body(15))
+                    .foregroundStyle(Tokens.inkSecondary)
+
+                step(1, "Connect the tunnel once", "LocalDevVPN must be connected. Press "
+                     + "Connect in Settings, or just Simulate — it connects for you.")
+                step(2, "Pairing file", "Settings → Import pairing files. One file, imported "
+                     + "once; the app saves what it needs.")
+                step(3, "Pick a place", "Tap the map, search an address, or add two or more "
+                     + "points for a route.")
+                step(4, "Simulate", "One tap. The tunnel opens, the write lands, and a line "
+                     + "appears above the buttons: how far the phone reports from the target.")
+                step(5, "Read the number", "0–60 m means it took effect and the phone "
+                     + "really is there. Hundreds of metres means the write was refused — "
+                     + "that line is the thing to send me.")
+
+                Text("The tunnel stays open while a spoof runs. That is required: the "
+                     + "simulated location lives inside the developer session, so closing "
+                     + "it hands the real location back.")
+                    .font(Tokens.caption)
+                    .foregroundStyle(Tokens.inkSecondary)
+
+                PrimaryButton(title: "Got it", role: .primary) { showGuide = false }
+            }
+            .padding(Tokens.s4)
+        }
+        .background(Tokens.canvas)
+    }
+
+    private func step(_ number: Int, _ title: String, _ body: String) -> some View {
+        HStack(alignment: .top, spacing: Tokens.s3) {
+            Text("\(number)")
+                .font(Tokens.display(18))
+                .foregroundStyle(Tokens.accent)
+                .frame(width: 22, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Tokens.body(15))
+                Text(body)
+                    .font(Tokens.caption)
+                    .foregroundStyle(Tokens.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: - Map layers
