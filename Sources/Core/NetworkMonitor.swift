@@ -12,6 +12,10 @@ final class NetworkMonitor: ObservableObject {
     @Published private(set) var isOnWiFi = false
     @Published private(set) var isOnline = false
 
+    /// Fired when the phone gets a network back after having none — the signal
+    /// that a cellular-mode run should stop instead of cycling radios again.
+    var onConnectivityReturned: (() -> Void)?
+
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.aman.wandering.network")
 
@@ -21,8 +25,12 @@ final class NetworkMonitor: ObservableObject {
             let online = path.status == .satisfied
             Task { @MainActor in
                 guard let self else { return }
+                let hadNetwork = self.isOnWiFi || self.isOnline
                 if self.isOnWiFi != onWiFi {
                     DiagLog.shared.note("network: wi-fi \(onWiFi ? "connected" : "gone")")
+                }
+                if !hadNetwork && (onWiFi || online) {
+                    self.onConnectivityReturned?()
                 }
                 self.isOnWiFi = onWiFi
                 self.isOnline = online

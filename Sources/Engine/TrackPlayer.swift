@@ -64,6 +64,13 @@ final class TrackPlayer: ObservableObject {
 
     func play(samples: [TrackSample], sink: LocationSink, rate: Double = 1.0,
               holdAtEnd: Bool = true) {
+        // A second start while one is running used to interleave two streams
+        // and produce the play/stop churn seen in the logs.
+        if phase.isActive {
+            DiagLog.shared.log("play: another playback was already running — "
+                               + "replacing it")
+            stop(clear: false)
+        }
         stop(clear: false)
         guard !samples.isEmpty else { return }
         self.sink = sink

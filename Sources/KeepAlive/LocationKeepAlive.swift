@@ -22,11 +22,15 @@ final class LocationKeepAlive: NSObject, ObservableObject, CLLocationManagerDele
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // Best accuracy on purpose: coarse updates stop arriving when the phone is
+        // still, and a suspended app stops moving the spoof. Frequent fixes are what
+        // keep the process alive in the background.
+        manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = true
-        manager.activityType = .other
+        manager.activityType = .otherNavigation
+        manager.showsBackgroundLocationIndicator = true
         authorization = manager.authorizationStatus
     }
 

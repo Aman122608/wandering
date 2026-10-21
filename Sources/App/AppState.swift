@@ -71,6 +71,9 @@ final class AppState: ObservableObject {
 
     init() {
         supervisor.bind(player: player, session: session)
+        network.onConnectivityReturned = { [weak self] in
+            self?.airplane.finishEarly()
+        }
         player.onWriteSuccess = { [weak self] _ in
             self?.supervisor.recordWrite()
         }
@@ -198,10 +201,12 @@ final class AppState: ObservableObject {
 
         let wantsCellular = UserDefaults.standard.bool(forKey: "airplaneInit")
         if wantsCellular && !network.isOnWiFi && !airplane.phase.isRunning {
-            DiagLog.shared.note("start: no tunnel and no Wi-Fi — asking before cellular mode "
-                                + "(online: \(network.isOnline))")
+            // No tunnel and no Wi-Fi: this is the one case that needs the radio dance,
+            // and it runs on its own. Asking every time was friction for no decision —
+            // the setting above is the consent.
+            DiagLog.shared.note("start: no tunnel and no Wi-Fi — running cellular mode")
             consentPending = action
-            cellularConsentNeeded = true
+            runCellularSequence()
             return
         }
         action()

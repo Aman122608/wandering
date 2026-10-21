@@ -88,6 +88,21 @@ final class AirplaneSequence: ObservableObject {
         var title: String { self == .singleSwitch ? "One Shortcut" : "Two Shortcuts" }
     }
 
+    /// Remembers what to send when a run is cut short.
+    private var lastStyle: ShortcutStyle = .singleSwitch
+    private var lastOn = ""
+    private var lastOff = ""
+
+    /// The radio came back underneath us (the user left Airplane Mode, or Wi-Fi
+    /// returned). Send the restore leg and stop claiming the run is in progress.
+    func finishEarly() {
+        guard phase.isRunning else { return }
+        DiagLog.shared.note("airplane: radio returned — finishing the cellular run")
+        openShortcut(style: lastStyle, on: lastOn, off: lastOff, input: "off")
+        phase = .finished
+        detail = "Stopped — the radio came back."
+    }
+
     /// `move` performs the injection (teleport or route start).
     func run(target: CLLocationCoordinate2D?,
              style: ShortcutStyle,
@@ -96,6 +111,9 @@ final class AirplaneSequence: ObservableObject {
              connect: @escaping () async throws -> Void,
              move: @escaping () async -> Void) async {
         guard !phase.isRunning else { return }
+        lastStyle = style
+        lastOn = shortcutOn
+        lastOff = shortcutOff
 
         do {
             phase = .waitingForTunnel
