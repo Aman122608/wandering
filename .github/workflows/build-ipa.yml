@@ -91,4 +91,4 @@ jobs:
             Install with SideStore/AltStore/ESign on your own Apple ID, then open
             Wandering once and import your pairing file.
           files: build/Wandering.ipa
-          prerelease: true
+          prerelease: false
