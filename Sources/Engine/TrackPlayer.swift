@@ -47,6 +47,12 @@ final class TrackPlayer: ObservableObject {
     /// Playback rate multiplier: 1 = real time, 4 = four times faster.
     @Published var rate: Double = 1.0
 
+    /// Called when a write fails. Returning true means the transport recovered and
+    /// the same sample should be retried; false lets the failure counter climb.
+    var onWriteFailure: (@MainActor (Error) async -> Bool)?
+    /// Fired after every successful write, so the supervisor knows the stream is alive.
+    var onWriteSuccess: (@MainActor (CLLocationCoordinate2D) -> Void)?
+
     private var sink: LocationSink?
     private var task: Task<Void, Never>?
     private var pauseFlag = false
@@ -88,19 +94,40 @@ final class TrackPlayer: ObservableObject {
                     await self.slice(sample.delay / self.rate)
                     if self.stopFlag || Task.isCancelled { return }
                 }
-                do {
-                    try await sink.setLocation(latitude: sample.coordinate.latitude,
-                                               longitude: sample.coordinate.longitude)
-                    failures = 0
-                } catch {
-                    failures += 1
-                    self.lastError = error.localizedDescription
-                    DiagLog.shared.note("write failed (\(failures)): \(error.localizedDescription)")
-                    if failures >= 3 {
-                        self.phase = .failed(error.localizedDescription)
-                        return
+                var wrote = false
+                var lastFailure: Error?
+                for attempt in 0..<3 {
+                    do {
+                        try await sink.setLocation(latitude: sample.coordinate.latitude,
+                                                   longitude: sample.coordinate.longitude)
+                        wrote = true
+                        failures = 0
+                        break
+                    } catch {
+                        lastFailure = error
+                        failures += 1
+                        self.lastError = error.localizedDescription
+                        DiagLog.shared.note("write failed (\(failures), attempt \(attempt + 1)): "
+                            + error.localizedDescription)
+                        // Ask the supervisor to rebuild the tunnel before retrying.
+                        if attempt < 2, let recover = self.onWriteFailure,
+                           await recover(error) {
+                            continue
+                        }
+                        try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))
                     }
                 }
+                guard wrote else {
+                    if failures >= 4 {
+                        self.phase = .failed(lastFailure?.localizedDescription
+                                             ?? "device stopped accepting writes")
+                        return
+                    }
+                    index += 1
+                    continue
+                }
+
+                self.onWriteSuccess?(sample.coordinate)
 
                 if let previous {
                     let d = Geo.distance(previous, sample.coordinate)
@@ -151,6 +178,18 @@ final class TrackPlayer: ObservableObject {
                   holdAtEnd: Bool = true) {
         let samples = [TrackSample(coordinate: coordinate, delay: 0)]
         play(samples: samples, sink: sink, rate: 1, holdAtEnd: holdAtEnd)
+    }
+
+    /// Re-send the current coordinate right now — used when the fix drifts back
+    /// to the real GPS, or after the transport has been rebuilt.
+    func reassert() {
+        guard phase.isActive, let coordinate = current, let sink else { return }
+        Task {
+            try? await sink.setLocation(latitude: coordinate.latitude,
+                                        longitude: coordinate.longitude)
+            DiagLog.shared.note("re-asserted \(String(format: "%.5f", coordinate.latitude)), "
+                + "\(String(format: "%.5f", coordinate.longitude))")
+        }
     }
 
     func pause() {

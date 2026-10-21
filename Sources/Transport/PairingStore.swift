@@ -102,7 +102,7 @@ enum PairingStore {
 
         if let entry = entry(for: destination) {
             setActive(entry)
-            DiagLog.shared.note("pairing: imported \(entry.name)"
+            DiagLog.shared.log("pairing: imported \(entry.name)"
                 + (entry.identifier.map { " (id \($0.prefix(8)))" } ?? ""))
             return entry
         }
@@ -137,7 +137,7 @@ enum PairingStore {
         if store.string(forKey: activeKey) == entry.name {
             store.removeObject(forKey: activeKey)
         }
-        DiagLog.shared.note("pairing: removed \(entry.name)")
+        DiagLog.shared.log("pairing: removed \(entry.name)")
     }
 
     // MARK: - Helpers

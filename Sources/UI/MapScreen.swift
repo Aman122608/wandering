@@ -356,6 +356,18 @@ struct MapScreen: View {
                 .accessibilityLabel("Settings")
             }
 
+            HStack(spacing: Tokens.s2) {
+                StatusChip(text: state.supervisor.health.label,
+                           tone: supervisorTone)
+                if !state.supervisor.note.isEmpty {
+                    Text(state.supervisor.note)
+                        .font(Tokens.caption)
+                        .foregroundStyle(Tokens.inkSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+
             if let error = state.player.lastError ?? state.planError {
                 Text(error)
                     .font(Tokens.caption)
@@ -367,6 +379,15 @@ struct MapScreen: View {
         .padding(Tokens.s3)
         .background(Tokens.canvas)
         .overlay(alignment: .top) { Divider().overlay(Tokens.hairline) }
+    }
+
+    private var supervisorTone: StatusChip.Tone {
+        switch state.supervisor.health {
+        case .healthy: return .live
+        case .recovering: return .busy
+        case .lost: return .bad
+        case .idle: return .neutral
+        }
     }
 
     private var routeOptions: some View {

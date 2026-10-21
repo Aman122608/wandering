@@ -58,6 +58,14 @@ final class AppState: ObservableObject {
     let player = TrackPlayer()
     let session = DeviceSession()
     let airplane = AirplaneSequence()
+    let supervisor = SessionSupervisor()
+
+    init() {
+        supervisor.bind(player: player, session: session)
+        player.onWriteSuccess = { [weak self] _ in
+            self?.supervisor.recordWrite()
+        }
+    }
     private let router = Router()
     private var searchTask: Task<Void, Never>?
     private var planTask: Task<Void, Never>?
@@ -183,11 +191,15 @@ final class AppState: ObservableObject {
         DiagLog.shared.note("play \(preset.title) · \(samples.count) samples · "
             + String(format: "%.1f km/h cap", maxSpeedKmh))
         player.play(samples: samples, sink: session, rate: playbackRate)
+        if let first = samples.first?.coordinate {
+            supervisor.begin(target: first)
+        }
     }
 
     func teleport(to coordinate: CLLocationCoordinate2D) {
         DiagLog.shared.note("teleport · \(Router.format(coordinate))")
         player.teleport(to: coordinate, sink: session)
+        supervisor.begin(target: coordinate)
         remember(coordinate)
     }
 
@@ -197,6 +209,41 @@ final class AppState: ObservableObject {
 
     func stop(clear: Bool) {
         player.stop(clear: clear)
+        supervisor.end()
+    }
+
+    /// Called when the app comes back to the foreground. iOS may have suspended the
+    /// whole process, which stops the writes without failing them; this checks the
+    /// stream and either nudges it or rebuilds.
+    func resumeAfterForeground() {
+        guard player.phase.isActive else {
+            Task { await autoResumeIfNeeded() }
+            return
+        }
+        let since = Date().timeIntervalSince(supervisor.lastWrite ?? .distantPast)
+        DiagLog.shared.note("foreground: session active, last write \(Int(since))s ago")
+        if since > 7 {
+            Task { _ = await supervisor.recover(reason: "resumed from background") }
+        } else {
+            player.reassert()
+        }
+    }
+
+    /// Brings back the last session after a relaunch or a kill, if it is recent.
+    /// The tunnel always dies with the process, so this is a rebuild, not a resume
+    /// of a running session.
+    func autoResumeIfNeeded() async {
+        guard !isLive,
+              Defaults.wasSpoofing,
+              let target = Defaults.resumeTarget,
+              Date().timeIntervalSince(Defaults.lastSessionAt) < 12 * 3600 else { return }
+        DiagLog.shared.note("auto-resume: restoring \(Router.format(target))")
+        await session.connect()
+        guard session.connection.isReady else {
+            DiagLog.shared.note("auto-resume: tunnel not ready, staying idle")
+            return
+        }
+        teleport(to: target)
     }
 
     // MARK: - Resume
@@ -293,5 +340,29 @@ enum Defaults {
     static var sharingMode: Bool {
         get { store.object(forKey: "motion.sharing") as? Bool ?? false }
         set { store.set(newValue, forKey: "motion.sharing") }
+    }
+
+    // Session intent: what to restore if the app is relaunched mid-session.
+
+    static var wasSpoofing: Bool {
+        get { store.object(forKey: "session.wasSpoofing") as? Bool ?? false }
+        set { store.set(newValue, forKey: "session.wasSpoofing") }
+    }
+
+    static var lastSessionAt: Date {
+        get { store.object(forKey: "session.lastAt") as? Date ?? .distantPast }
+        set { store.set(newValue, forKey: "session.lastAt") }
+    }
+
+    static var resumeTarget: CLLocationCoordinate2D? {
+        get {
+            guard let values = store.array(forKey: "session.target") as? [Double],
+                  values.count == 2 else { return nil }
+            return CLLocationCoordinate2D(latitude: values[0], longitude: values[1])
+        }
+        set {
+            guard let newValue else { store.removeObject(forKey: "session.target"); return }
+            store.set([newValue.latitude, newValue.longitude], forKey: "session.target")
+        }
     }
 }

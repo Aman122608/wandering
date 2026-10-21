@@ -14,6 +14,7 @@ final class LocationKeepAlive: NSObject, ObservableObject, CLLocationManagerDele
     @Published private(set) var running = false
     @Published private(set) var authorization: CLAuthorizationStatus = .notDetermined
     @Published private(set) var lastFix: Date?
+    @Published private(set) var lastCoordinate: CLLocationCoordinate2D?
 
     private let manager = CLLocationManager()
     private var wantsUpdates = false
@@ -65,7 +66,11 @@ final class LocationKeepAlive: NSObject, ObservableObject, CLLocationManagerDele
 
     nonisolated func locationManager(_ manager: CLLocationManager,
                                      didUpdateLocations locations: [CLLocation]) {
-        Task { @MainActor in self.lastFix = Date() }
+        guard let latest = locations.last else { return }
+        Task { @MainActor in
+            self.lastFix = Date()
+            self.lastCoordinate = latest.coordinate
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager,

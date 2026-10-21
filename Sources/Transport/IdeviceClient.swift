@@ -15,7 +15,11 @@ actor IdeviceClient {
         var productVersion: String
     }
 
-    private let queue = DispatchQueue(label: "com.aman.wandering.iddevice", qos: .userInitiated)
+    /// A wedged FFI call cannot be interrupted, so each connection gets its own
+    /// queue: dropping the tunnel abandons the old queue and its stuck call instead
+    /// of letting it block every future write.
+    private var queue = DispatchQueue(label: "com.aman.wandering.iddevice.0", qos: .userInitiated)
+    private var generation = 0
     private var device: OpaquePointer?
     private var connected = false
     private var mounted = false
@@ -24,6 +28,9 @@ actor IdeviceClient {
 
     func connect(endpoint: TunnelEndpoint, pairingFile: URL) async throws {
         if connected { return }
+        generation += 1
+        queue = DispatchQueue(label: "com.aman.wandering.iddevice.\(generation)",
+                              qos: .userInitiated)
         let handle = try await onQueue(timeout: 25) { () -> OpaquePointer in
             guard let handle = wd_create() else {
                 throw SinkError.internalFailure("could not allocate device handle")
