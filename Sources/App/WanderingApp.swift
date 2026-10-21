@@ -21,6 +21,9 @@ struct WanderingApp: App {
                     // before the first session, not during it.
                     location.requestPermission()
                     state.session.refreshPairings()
+                    state.session.fixProbe = { [weak location] in
+                        (location?.lastCoordinate, location?.lastFix)
+                    }
                     await state.autoResumeIfNeeded()
                     DiagLog.shared.note("app ready · pairing file "
                         + (PairingStore.current == nil ? "missing" : "present"))

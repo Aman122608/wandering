@@ -60,11 +60,14 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var writeCount = 0
     @Published private(set) var isStreaming = false
 
+    /// Default is now persistent: on this device the simulated location lives inside the
+    /// developer session, so closing the tunnel reverts it. "Close after setup" is kept
+    /// as an option for experiments, not as the default it used to be.
     @Published var lifetime: TunnelLifetime =
-        TunnelLifetime(rawValue: UserDefaults.standard.string(forKey: "tunnel.lifetime") ?? "")
-        ?? .setupOnly {
+        TunnelLifetime(rawValue: UserDefaults.standard.string(forKey: "tunnel.lifetime.v2") ?? "")
+        ?? .persistent {
         didSet {
-            UserDefaults.standard.set(lifetime.rawValue, forKey: "tunnel.lifetime")
+            UserDefaults.standard.set(lifetime.rawValue, forKey: "tunnel.lifetime.v2")
             if lifetime == .persistent { cancelIdleClose() }
             DiagLog.shared.note("tunnel: lifetime → \(lifetime.title)")
         }
@@ -78,6 +81,9 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published var importError: String?
     /// Second backend: lockdownd's developer service needs no pairing at all.
     let lockdown = LockdownTransport()
+    /// Supplies the phone's own CoreLocation fix, so a write can be confirmed
+    /// rather than merely reported as accepted.
+    var fixProbe: (() -> (CLLocationCoordinate2D?, Date?))?
     /// True once a write path has been chosen: the pairing tunnel or lockdownd.
     @Published private(set) var useLockdown = false
 
@@ -247,6 +253,8 @@ final class DeviceSession: ObservableObject, LocationSink {
             writeCount += 1
             lastWrite = Date()
             if lifetime == .setupOnly, !isStreaming { scheduleIdleClose() }
+            scheduleVerification(target: CLLocationCoordinate2D(latitude: latitude,
+                                                               longitude: longitude))
         } catch {
             connection = .failed(error.localizedDescription)
             if lifetime == .setupOnly {
@@ -274,6 +282,33 @@ final class DeviceSession: ObservableObject, LocationSink {
         writeCount = 0
         lastWrite = nil
         scheduleIdleClose(after: 0.6)
+    }
+
+    /// Reads back the phone's own fix a couple of seconds after a write.
+    ///
+    /// A successful DVT call only means the daemon accepted the message. What matters is
+    /// whether CoreLocation actually reports the new position — without this, a spoof that
+    /// silently reverts looks exactly like one that worked.
+    private func scheduleVerification(target: CLLocationCoordinate2D) {
+        guard let fixProbe else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard self != nil else { return }
+            let (fix, when) = fixProbe()
+            guard let fix, let when,
+                  Date().timeIntervalSince(when) < 10 else {
+                DiagLog.shared.log("verify: no fresh fix to compare yet")
+                return
+            }
+            let away = Geo.distance(fix, target)
+            if away < 60 {
+                DiagLog.shared.note("verify: device reports the target "
+                                    + "(\(Int(away))m off) — write took effect")
+            } else {
+                DiagLog.shared.note("verify: device is \(Int(away))m from the target — "
+                                    + "write was accepted but did not take effect")
+            }
+        }
     }
 
     /// One burst: open, write, close. Used when the supervisor detects the fix has

@@ -215,8 +215,9 @@ struct SettingsScreen: View {
                             SectionLabel(text: "Connection")
                             VStack(alignment: .leading, spacing: Tokens.s2) {
                                 Text("Tunnel lifetime").font(Tokens.body(15))
-                                Text("The tunnel is only needed to set the location. Once the "
-                                     + "device has it, the spoof stays without any connection.")
+                                Text("On this iOS build the simulated location lives inside "
+                                     + "the developer session: closing the tunnel reverts it. "
+                                     + "Keep it open while a spoof is running.")
                                     .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
                                 Picker("Tunnel lifetime", selection: Binding(
                                     get: { state.session.lifetime },
