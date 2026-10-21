@@ -223,7 +223,7 @@ final class AppState: ObservableObject {
         let since = Date().timeIntervalSince(supervisor.lastWrite ?? .distantPast)
         DiagLog.shared.note("foreground: session active, last write \(Int(since))s ago")
         if since > 7 {
-            Task { _ = await supervisor.recover(reason: "resumed from background") }
+            Task { _ = await supervisor.repair(reason: "resumed from background") }
         } else {
             player.reassert()
         }

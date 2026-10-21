@@ -91,7 +91,10 @@ final class SessionSupervisor: ObservableObject {
 
     func recordWrite() {
         lastWrite = Date()
-        if health == .streaming || health == .repairing { health = .streaming }
+        switch health {
+        case .streaming, .repairing: health = .streaming
+        default: break
+        }
     }
 
     func end() {
