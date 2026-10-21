@@ -14,6 +14,7 @@ struct SettingsScreen: View {
     @AppStorage("airplaneShortcutOff") private var airplaneShortcutOff = "Airplane Off"
 
     @State private var importingPairing = false
+    @StateObject private var pairHost = PairHostBroker.shared
 
     private func pairingRow(_ entry: PairingStore.Entry) -> some View {
         let active = state.session.pairingFileURL?.lastPathComponent == entry.name
@@ -252,9 +253,18 @@ struct SettingsScreen: View {
                                     .font(Tokens.body(15))
                             }
                             Button {
+                                pairHost.onPaired = { _ in
+                                    Task { await state.session.connect() }
+                                }
+                                pairHost.start()
+                            } label: {
+                                Label("Pair with this iPhone", systemImage: "iphone.and.arrow.forward")
+                                    .font(Tokens.body(15))
+                            }
+                            Button {
                                 Task { await state.session.pairFromScratch() }
                             } label: {
-                                Label("Pair from scratch", systemImage: "key.horizontal")
+                                Label("Pair from scratch (legacy)", systemImage: "key.horizontal")
                                     .font(Tokens.body(15))
                             }
                             Text("Discards the current pairing record, makes a new one and "
@@ -282,6 +292,10 @@ struct SettingsScreen: View {
                 }
             }
             .onReceive(state.airplane.objectWillChange) { _ in }
+            .sheet(isPresented: Binding(
+                get: { pairHost.isPairing || pairHost.message != nil },
+                set: { if !$0 { pairHost.dismiss() } }
+            )) { pairHostSheet }
             .sheet(isPresented: $importingPairing) {
                 DocumentPicker { urls in
                     importingPairing = false
@@ -299,6 +313,40 @@ struct SettingsScreen: View {
             }
             .onAppear { state.session.refreshPairings() }
         }
+    }
+
+    private var pairHostSheet: some View {
+        VStack(alignment: .leading, spacing: Tokens.s4) {
+            Text("Pair with your iPhone").font(Tokens.heading(20))
+            VStack(alignment: .leading, spacing: Tokens.s2) {
+                Text("1. Turn on Wi-Fi.").font(Tokens.body(15))
+                Text("2. Settings → Privacy & Security → Developer Mode → "
+                     + "\"Pair with Wandering\".").font(Tokens.body(15))
+                Text("3. Type the code below on the iPhone.").font(Tokens.body(15))
+            }
+            .foregroundStyle(Tokens.inkSecondary)
+
+            if let code = pairHost.code {
+                Text(code)
+                    .font(.system(size: 44, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Tokens.accent)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else if pairHost.isPairing {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+
+            if let message = pairHost.message {
+                Text(message)
+                    .font(Tokens.caption)
+                    .foregroundStyle(Tokens.inkSecondary)
+            }
+            Spacer(minLength: 0)
+            PrimaryButton(title: "Close", role: .neutral) { pairHost.dismiss() }
+        }
+        .padding(Tokens.s4)
+        .presentationDetents([.height(380)])
+        .background(Tokens.canvas)
     }
 
     private func readout(_ title: String, _ value: String) -> some View {

@@ -33,6 +33,54 @@ struct WanderingDevice {
     int connected;
 };
 
+// MARK: - device-initiated pairing (iOS 27 flow)
+//
+// On iOS 27 the iPhone pairs with a *host it discovers*: Settings → Privacy &
+// Security → Developer Mode → "Pair with <name>", then it shows/asks for a 6-digit
+// code. That is the only way to get a pairing record this device accepts once an
+// older record has been replaced — pair-verify with a stale record is answered with a
+// reset, which is what "Connection reset by peer" has been.
+
+typedef void (*wd_pin_display_fn)(const char *pin, void *context);
+
+static wd_pin_display_fn g_pin_display = NULL;
+static void *g_pin_display_context = NULL;
+
+void wd_set_pin_display(wd_pin_display_fn fn, void *context) {
+    g_pin_display = fn;
+    g_pin_display_context = context;
+}
+
+static void wd_pin_display_cb(const char *pin, void *context) {
+    (void)context;
+    if (g_pin_display != NULL) {
+        g_pin_display(pin != NULL ? pin : "", g_pin_display_context);
+    }
+}
+
+int wd_pair_host(const char *name, const char *pairing_path, char *err, size_t err_len) {
+    if (name == NULL || pairing_path == NULL) {
+        wd_note(err, err_len, "invalid arguments");
+        return -1;
+    }
+    struct RpPairingFileHandle *pairing = NULL;
+    struct IdeviceFfiError *e = pairable_host_accept(name, NULL, 0,
+                                                    wd_pin_display_cb, NULL,
+                                                    NULL, NULL, &pairing);
+    if (wd_fail(e, err, err_len, "pair with device") != 0 || pairing == NULL) {
+        if (e == NULL) {
+            wd_note(err, err_len, "pairing returned no record");
+        }
+        return -1;
+    }
+    e = rp_pairing_file_write(pairing, pairing_path);
+    rp_pairing_file_free(pairing);
+    if (wd_fail(e, err, err_len, "save paired record") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 // MARK: - pairing PIN handshake
 //
 // `tunnel_create_rppairing` runs a pair-setup on the same socket when the device has

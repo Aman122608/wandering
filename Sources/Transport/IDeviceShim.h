@@ -45,6 +45,15 @@ int wd_submit_pin(const char *pin);
 /// Abandon a waiting PIN request.
 void wd_cancel_pin(void);
 
+/// Shows the 6-digit code the device expects, so the user can type it there.
+typedef void (*wd_pin_display_fn)(const char *pin, void *context);
+void wd_set_pin_display(wd_pin_display_fn fn, void *context);
+
+/// Advertises this app as a pairable host and waits for the iPhone to pair with it
+/// (Settings → Privacy & Security → Developer Mode → "Pair with ..."). Blocking;
+/// writes the resulting record to `pairing_path` on success.
+int wd_pair_host(const char *name, const char *pairing_path, char *err, size_t err_len);
+
 /// Writes a fresh RP pairing file (new keys, never paired) to `path`.
 int wd_generate_pairing_file(const char *path, char *err, size_t err_len);
 

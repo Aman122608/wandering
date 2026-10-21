@@ -156,6 +156,21 @@ enum PairingStore {
         }
     }
 
+    /// Where a device-initiated pairing will write its record.
+    static func newPairingDestination() -> URL {
+        let base = directory ?? FileManager.default.temporaryDirectory
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent(uniqueName(for: "Paired-iPhone.plist"))
+    }
+
+    /// Takes ownership of a file already written into Application Support.
+    @discardableResult
+    static func adopt(_ url: URL) -> Entry? {
+        guard let entry = entry(for: url) else { return nil }
+        setActive(entry)
+        return entry
+    }
+
     /// Creates a fresh pairing record with new keys and makes it active.
     ///
     /// A record that was never confirmed by *this* device cannot pass pair-verify, and

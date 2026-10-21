@@ -31,6 +31,7 @@ enum TunnelLifetime: String, CaseIterable, Identifiable {
 final class DeviceSession: ObservableObject, LocationSink {
     init() {
         installPinProvider()
+        installPairableHost()
     }
 
 
