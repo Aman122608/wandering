@@ -178,7 +178,10 @@ struct SettingsScreen: View {
                     Panel {
                         VStack(alignment: .leading, spacing: Tokens.s3) {
                             SectionLabel(text: "Connection")
-                            Toggle(isOn: $state.session.burstTunnel) {
+                            Toggle(isOn: Binding(
+                                get: { state.session.burstTunnel },
+                                set: { state.session.burstTunnel = $0 }
+                            )) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Ephemeral tunnel").font(Tokens.body(15))
                                     Text("Keeps the VPN up only around each write, so the indicator "

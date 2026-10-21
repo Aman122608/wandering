@@ -6,6 +6,7 @@ struct DiagnosticsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var log = DiagLog.shared
 
+    @StateObject private var selfTest = SelfTestRunner()
     @State private var probing = false
     @State private var probeResult: [String] = []
     @State private var copied = false
@@ -41,6 +42,43 @@ struct DiagnosticsScreen: View {
                             if let last = state.session.lastWrite {
                                 DetailRow(label: "last write",
                                           value: last.formatted(date: .omitted, time: .standard))
+                            }
+                        }
+                    }
+
+                    Panel {
+                        VStack(alignment: .leading, spacing: Tokens.s2) {
+                            SectionLabel(text: "Self-test")
+                            Text("Runs the real path end to end: pairing → tunnel → RSD → "
+                                 + "developer services → write → clear.")
+                                .font(Tokens.caption)
+                                .foregroundStyle(Tokens.inkSecondary)
+                            PrimaryButton(title: selfTest.isRunning ? "Running…" : "Run self-test",
+                                          systemImage: "checklist",
+                                          role: .neutral,
+                                          isEnabled: !selfTest.isRunning) {
+                                Task {
+                                    await selfTest.run(session: state.session,
+                                                       target: state.waypoints.first?.coordinate)
+                                }
+                            }
+                            ForEach(selfTest.steps) { step in
+                                HStack(alignment: .top, spacing: Tokens.s2) {
+                                    Image(systemName: step.status.symbol)
+                                        .foregroundStyle(color(for: step.status))
+                                        .frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(step.title)
+                                            .font(Tokens.body(13))
+                                            .foregroundStyle(Tokens.ink)
+                                        if case .failed(let why) = step.status {
+                                            Text(why)
+                                                .font(Tokens.caption)
+                                                .foregroundStyle(Tokens.danger)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
                             }
                         }
                     }
@@ -111,6 +149,15 @@ struct DiagnosticsScreen: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    private func color(for status: SelfTestRunner.Status) -> Color {
+        switch status {
+        case .passed: return Tokens.live
+        case .failed: return Tokens.danger
+        case .running: return Tokens.accent
+        case .pending, .skipped: return Tokens.inkSecondary
         }
     }
 
