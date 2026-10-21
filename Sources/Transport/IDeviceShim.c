@@ -342,6 +342,135 @@ int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len) {
     return 0;
 }
 
+// MARK: - lockdownd probe
+//
+// LocalDevVPN's loopback reaches lockdownd (10.7.0.1:62078), not the remote-pairing
+// service, so this asks lockdownd a plain QueryType — which needs no pairing at all —
+// and reports the answer. A real reply means that path is usable and we can stop
+// fighting remotepairingd; a closed connection means the tunnel gives us nothing.
+
+static const char *kWanderingQuery =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+    "<plist version=\"1.0\"><dict>"
+    "<key>Label</key><string>Wandering</string>"
+    "<key>Request</key><string>QueryType</string>"
+    "<key>Key</key><string>ProductVersion</string>"
+    "</dict></plist>";
+
+static int wd_send_all(int fd, const void *buf, size_t len) {
+    const unsigned char *cursor = buf;
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, cursor + sent, len - sent, 0);
+        if (n <= 0) return -1;
+        sent += (size_t)n;
+    }
+    return 0;
+}
+
+static int wd_recv_all(int fd, void *buf, size_t len) {
+    unsigned char *cursor = buf;
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = recv(fd, cursor + got, len - got, 0);
+        if (n <= 0) return -1;
+        got += (size_t)n;
+    }
+    return 0;
+}
+
+int wd_probe_lockdown(const char *ip, uint16_t port, char *out, size_t out_len) {
+    if (ip == NULL || out == NULL || out_len == 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        snprintf(out, out_len, "bad address");
+        return -1;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        snprintf(out, out_len, "socket() failed");
+        return -1;
+    }
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        snprintf(out, out_len, "connect failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    size_t payload = strlen(kWanderingQuery);
+    unsigned char header[4] = {
+        (unsigned char)((payload >> 24) & 0xff),
+        (unsigned char)((payload >> 16) & 0xff),
+        (unsigned char)((payload >> 8) & 0xff),
+        (unsigned char)(payload & 0xff)
+    };
+    if (wd_send_all(fd, header, 4) != 0
+        || wd_send_all(fd, kWanderingQuery, payload) != 0) {
+        snprintf(out, out_len, "connected, but the query could not be sent: %s",
+                 strerror(errno));
+        close(fd);
+        return 0;
+    }
+
+    unsigned char reply_header[4];
+    if (wd_recv_all(fd, reply_header, 4) != 0) {
+        snprintf(out, out_len, "connected and queried, but lockdownd closed without answering");
+        close(fd);
+        return 0;
+    }
+    size_t reply_len = ((size_t)reply_header[0] << 24) | ((size_t)reply_header[1] << 16)
+                     | ((size_t)reply_header[2] << 8) | (size_t)reply_header[3];
+    if (reply_len == 0 || reply_len > 65536) {
+        snprintf(out, out_len, "answered with an implausible length (%zu)", reply_len);
+        close(fd);
+        return 0;
+    }
+
+    char *reply = calloc(1, reply_len + 1);
+    if (reply == NULL) {
+        snprintf(out, out_len, "out of memory reading the answer");
+        close(fd);
+        return -1;
+    }
+    if (wd_recv_all(fd, reply, reply_len) != 0) {
+        snprintf(out, out_len, "answer truncated after the length header");
+        free(reply);
+        close(fd);
+        return 0;
+    }
+    close(fd);
+
+    const char *value = strstr(reply, "<string>");
+    if (value != NULL) {
+        value += strlen("<string>");
+        const char *end = strstr(value, "</string>");
+        if (end != NULL && (size_t)(end - value) < 64) {
+            snprintf(out, out_len, "lockdownd answered: %.*s", (int)(end - value), value);
+            free(reply);
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < reply_len; i++) {
+        if (reply[i] == '\n' || reply[i] == '\r') reply[i] = ' ';
+    }
+    snprintf(out, out_len, "lockdownd answered %zu bytes: %.100s", reply_len, reply);
+    free(reply);
+    return 0;
+}
+
+// MARK: - connect
+
 // MARK: - connect
 
 int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,

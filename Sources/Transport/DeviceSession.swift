@@ -76,6 +76,8 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var pairingEntries: [PairingStore.Entry] = []
     /// Why the last import did nothing — surfaced to the user instead of failing silently.
     @Published var importError: String?
+    /// Set by the probe: true when the device kept the socket open, waiting for us.
+    private var lastProbeWaitedForUs = false
 
     var describe: String { connection.label }
 
@@ -140,30 +142,42 @@ final class DeviceSession: ObservableObject, LocationSink {
         }
     }
 
-    /// Connects to the tunnel, says nothing, and reports what the device does. Tells a
-    /// rejected pairing (device waits, then resets after we speak) apart from a broken
-    /// forward (device closes immediately).
+    /// Reports what the tunnel actually does before any handshake is attempted.
+    ///
+    /// Three measurements, because they fail differently:
+    /// * 49152 — the remote-pairing service (silent = waits for us, close = nothing there)
+    /// * 62078 — lockdownd, which LocalDevVPN is documented to expose on 10.7.0.1
+    /// * a real QueryType to lockdownd, which needs no pairing and so proves the tunnel
     private func probeTunnel() {
-        let endpoints = TunnelProbe.candidates()
-        guard let theFirst = endpoints.first else { return }
         var buffer = [CChar](repeating: 0, count: 256)
-        let status = theFirst.address.withCString { host in
-            wd_probe_tunnel(host, theFirst.port, &buffer, 256)
+
+        if let first = TunnelProbe.candidates().first {
+            _ = first.address.withCString { wd_probe_tunnel($0, first.port, &buffer, 256) }
+            let pairingProbe = String(cString: buffer)
+            DiagLog.shared.log("probe \(first.address):\(first.port) — \(pairingProbe)")
+            // Only this probe says whether the pairing service itself waited for us.
+            lastProbeWaitedForUs = pairingProbe.contains("waits for us")
         }
-        let result = String(cString: buffer)
-        if status == 0 {
-            DiagLog.shared.log("probe \(theFirst.address):\(theFirst.port) — \(result)")
-        } else {
-            DiagLog.shared.log("probe \(theFirst.address):\(theFirst.port) failed — \(result)")
-        }
+
+        let lockdownHost = "10.7.0.1"
+        let lockdownPort: UInt16 = 62078
+        _ = lockdownHost.withCString { wd_probe_tunnel($0, lockdownPort, &buffer, 256) }
+        DiagLog.shared.log("probe \(lockdownHost):\(lockdownPort) — \(String(cString: buffer))")
+
+        _ = lockdownHost.withCString { wd_probe_lockdown($0, lockdownPort, &buffer, 256) }
+        DiagLog.shared.log("lockdownd \(lockdownHost):\(lockdownPort) — \(String(cString: buffer))")
     }
 
-    /// A reset with a record already on disk means the device replaced its record for
-    /// this host: only a fresh device-initiated pairing fixes that, so start it instead
-    /// of failing quietly.
+    /// A reset only means "this record was replaced" when the device waited for us to
+    /// speak. If it hung up unprompted, the tunnel is the problem and pairing would be
+    /// theatre.
     private func offerPairingAfterReset(_ message: String) {
         let lowered = message.lowercased()
         guard lowered.contains("reset") || lowered.contains("54") else { return }
+        guard lastProbeWaitedForUs else {
+            DiagLog.shared.note("connect: reset with an unresponsive tunnel — pairing skipped")
+            return
+        }
         guard !PairHostBroker.shared.isPairing else { return }
         DiagLog.shared.note("connect: reset — starting the pairing flow the device accepts")
         PairHostBroker.shared.onPaired = { [weak self] _ in
