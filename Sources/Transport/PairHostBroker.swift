@@ -47,15 +47,15 @@ final class PairHostBroker: ObservableObject {
             let detail = String(cString: buffer)
 
             Task { @MainActor in
-                shared.isPairing = false
-                shared.code = nil
+                PairHostBroker.shared.isPairing = false
+                PairHostBroker.shared.code = nil
                 if status == 0, let entry = PairingStore.adopt(destination) {
-                    shared.message = "Paired with \(entry.name)"
-                    DiagLog.shared.note("pairing: paired, record saved as \(entry.name)")
-                    shared.onPaired?(entry)
+                    PairHostBroker.shared.message = "Paired with \(entry.name)"
+                    DiagLog.PairHostBroker.shared.note("pairing: paired, record saved as \(entry.name)")
+                    PairHostBroker.shared.onPaired?(entry)
                 } else {
-                    shared.message = detail.isEmpty ? "Pairing failed" : detail
-                    DiagLog.shared.log("pairing: failed — \(shared.message ?? "")")
+                    PairHostBroker.shared.message = detail.isEmpty ? "Pairing failed" : detail
+                    DiagLog.PairHostBroker.shared.log("pairing: failed — \(PairHostBroker.shared.message ?? "")")
                 }
             }
         }
