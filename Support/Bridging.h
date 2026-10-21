@@ -6,3 +6,4 @@
 #import "IDeviceShim.h"
 
 #endif /* WANDERING_BRIDGING_H */
+#import "LockdownClient.h"

@@ -76,6 +76,11 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var pairingEntries: [PairingStore.Entry] = []
     /// Why the last import did nothing — surfaced to the user instead of failing silently.
     @Published var importError: String?
+    /// Second backend: lockdownd's developer service needs no pairing at all.
+    let lockdown = LockdownTransport()
+    /// True once a write path has been chosen: the pairing tunnel or lockdownd.
+    @Published private(set) var useLockdown = false
+
     /// Set by the probe: true when the device kept the socket open, waiting for us.
     private var lastProbeWaitedForUs = false
 
@@ -130,15 +135,43 @@ final class DeviceSession: ObservableObject, LocationSink {
         connection = .preparing("Looking for the developer tunnel…")
         DiagLog.shared.note("connect: begin")
         probeTunnel()
+
+        // If the pairing service kept the socket open, the tunnel is the way in.
+        if lastProbeWaitedForUs {
+            do {
+                try await Transport.shared.bringUp(session: self)
+                useLockdown = false
+                connection = .ready(address: Transport.shared.dialedAddress ?? "tunnel")
+                reconnectAttempts = 0
+                DiagLog.shared.note("connect: ready at \(Transport.shared.dialedAddress ?? "?")")
+                return
+            } catch {
+                DiagLog.shared.note("connect: pairing tunnel failed — \(error.localizedDescription)")
+                offerPairingAfterReset(error.localizedDescription)
+            }
+        }
+
+        // The pairing service hung up on us, so try lockdownd: it needs no pairing.
+        let lockdownStatus = await lockdown.prepare()
+        if lockdown.isReady {
+            useLockdown = true
+            connection = .ready(address: "lockdownd · service \(lockdown.servicePort)")
+            reconnectAttempts = 0
+            DiagLog.shared.note("connect: ready via lockdownd")
+            return
+        }
+        DiagLog.shared.note("connect: lockdownd unavailable — \(lockdownStatus)")
+
+        // Last try, mostly for the case where the probe was wrong.
         do {
             try await Transport.shared.bringUp(session: self)
+            useLockdown = false
             connection = .ready(address: Transport.shared.dialedAddress ?? "tunnel")
             reconnectAttempts = 0
             DiagLog.shared.note("connect: ready at \(Transport.shared.dialedAddress ?? "?")")
         } catch {
             connection = .failed(error.localizedDescription)
             DiagLog.shared.note("connect: failed — \(error.localizedDescription)")
-            offerPairingAfterReset(error.localizedDescription)
         }
     }
 
@@ -206,7 +239,11 @@ final class DeviceSession: ObservableObject, LocationSink {
             }
         }
         do {
-            try await Transport.shared.setLocation(latitude: latitude, longitude: longitude)
+            if useLockdown {
+                try await lockdown.setLocation(latitude: latitude, longitude: longitude)
+            } else {
+                try await Transport.shared.setLocation(latitude: latitude, longitude: longitude)
+            }
             writeCount += 1
             lastWrite = Date()
             if lifetime == .setupOnly, !isStreaming { scheduleIdleClose() }
@@ -229,7 +266,11 @@ final class DeviceSession: ObservableObject, LocationSink {
                 throw SinkError.notConnected(connection.label)
             }
         }
-        try await Transport.shared.clearLocation()
+        if useLockdown {
+            try await lockdown.clearLocation()
+        } else {
+            try await Transport.shared.clearLocation()
+        }
         writeCount = 0
         lastWrite = nil
         scheduleIdleClose(after: 0.6)
@@ -245,8 +286,13 @@ final class DeviceSession: ObservableObject, LocationSink {
         if !connection.isReady { await connect() }
         guard connection.isReady else { return false }
         do {
-            try await Transport.shared.setLocation(latitude: coordinate.latitude,
-                                                   longitude: coordinate.longitude)
+            if useLockdown {
+                try await lockdown.setLocation(latitude: coordinate.latitude,
+                                               longitude: coordinate.longitude)
+            } else {
+                try await Transport.shared.setLocation(latitude: coordinate.latitude,
+                                                       longitude: coordinate.longitude)
+            }
             lastWrite = Date()
             writeCount += 1
             if lifetime == .setupOnly { scheduleIdleClose() }
