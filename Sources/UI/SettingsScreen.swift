@@ -161,20 +161,22 @@ struct SettingsScreen: View {
                                 .foregroundStyle(Tokens.inkSecondary)
 
                             HStack {
-                                Text("Max speed").font(Tokens.body(15))
+                                Text("Top speed").font(Tokens.body(15))
                                 Spacer()
-                                Text("\(Int(state.chaser.capKmh)) km/h")
+                                Text("\(Int(state.chaser.capMph)) mph")
                                     .font(Tokens.display(18))
+                                    .monospacedDigit()
                             }
                             Slider(value: Binding(
-                                get: { state.chaser.capKmh },
-                                set: { state.chaser.capKmh = $0 }
-                            ), in: 10...130, step: 5)
+                                get: { state.chaser.capMph },
+                                set: { state.chaser.capMph = $0.rounded() }
+                            ), in: 5...85, step: 1)
                                 .tint(Tokens.accent)
 
                             HStack(spacing: Tokens.s4) {
                                 readout("Reported",
-                                        String(format: "%.0f", state.chaser.reportedSpeedKmh) + " km/h")
+                                        String(format: "%.0f",
+                                               state.chaser.reportedSpeedKmh / 1.609344) + " mph")
                                 readout("Behind by",
                                         String(format: "%.0f", state.chaser.gapMeters) + " m")
                             }

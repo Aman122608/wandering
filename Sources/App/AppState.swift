@@ -216,7 +216,16 @@ final class AppState: ObservableObject {
     /// Runs whatever the user pressed, once consent is in hand.
     func performStart() {
         if chaseRequested {
-            chaser.start(sink: session)
+            // Follow-me writes through the same transport as everything else, so it needs
+            // a live tunnel before it can trail anything.
+            Task {
+                await session.connect()
+                guard session.connection.isReady else {
+                    DiagLog.shared.note("chase: no tunnel — not starting")
+                    return
+                }
+                chaser.start(sink: session)
+            }
             return
         }
         if selectedRoute != nil {

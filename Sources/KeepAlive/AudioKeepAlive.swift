@@ -92,12 +92,16 @@ final class AudioKeepAlive: ObservableObject {
     }
 
     /// Suspends until the audio graph has played one more buffer.
-    func nextTick() async {
-        // No audio means no clock: return instead of suspending forever.
-        guard running, engine.isRunning, player.isPlaying else { return }
+    /// Returns true when it really waited for a buffer. False means there is no clock
+    /// right now, so the caller must fall back to a sleep — returning instantly would
+    /// turn the movement loop into a busy spin.
+    @discardableResult
+    func nextTick() async -> Bool {
+        guard running, engine.isRunning, player.isPlaying else { return false }
         await withCheckedContinuation { continuation in
             tickContinuation = continuation
         }
+        return true
     }
 
     private func scheduleSilence(format: AVAudioFormat) {
