@@ -7,6 +7,7 @@ struct DiagnosticsScreen: View {
     @ObservedObject private var log = DiagLog.shared
 
     @StateObject private var selfTest = SelfTestRunner()
+    @EnvironmentObject private var location: LocationKeepAlive
     @State private var probing = false
     @State private var probeResult: [String] = []
     @State private var copied = false
@@ -58,8 +59,11 @@ struct DiagnosticsScreen: View {
                                           role: .neutral,
                                           isEnabled: !selfTest.isRunning) {
                                 Task {
-                                    await selfTest.run(session: state.session,
-                                                       target: state.waypoints.first?.coordinate)
+                                    await selfTest.run(
+                                        session: state.session,
+                                        target: state.waypoints.first?.coordinate,
+                                        fixProbe: { (location.lastCoordinate, location.lastFix) }
+                                    )
                                 }
                             }
                             ForEach(selfTest.steps) { step in

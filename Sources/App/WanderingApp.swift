@@ -15,6 +15,7 @@ struct WanderingApp: App {
         WindowGroup {
             MapScreen()
                 .environmentObject(state)
+                .environmentObject(location)
                 .task {
                     // Ask once, early: background location needs authorisation
                     // before the first session, not during it.

@@ -37,7 +37,11 @@ final class SelfTestRunner: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var finishedAt: Date?
 
-    func run(session: DeviceSession, target: CLLocationCoordinate2D?) async {
+    /// `fixProbe` supplies the phone's own CoreLocation fix, which is how we learn
+    /// whether the simulated location survives the tunnel closing.
+    func run(session: DeviceSession,
+             target: CLLocationCoordinate2D?,
+             fixProbe: @escaping @MainActor () -> (CLLocationCoordinate2D?, Date?)) async {
         guard !isRunning else { return }
         isRunning = true
         finishedAt = nil
@@ -47,6 +51,7 @@ final class SelfTestRunner: ObservableObject {
             Step(title: "Remote pairing accepted (RSD)"),
             Step(title: "Developer Mode on · disk image mounted"),
             Step(title: "Location write accepted"),
+            Step(title: "Fix survives a closed tunnel"),
             Step(title: "Clear accepted (real GPS back)"),
         ]
 
@@ -100,13 +105,47 @@ final class SelfTestRunner: ObservableObject {
                 return fail(4, error.localizedDescription)
             }
 
-            // 6. clear
+            // 6. durability probe: does the fix outlive the tunnel?
             try set(5, .running)
+            if session.burstTunnel {
+                steps[5].status = .skipped("Burst mode is already on")
+            } else {
+                let anchor = coordinate
+                session.disconnect()
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                let (fix, when) = fixProbe()
+                let fresh = when.map { Date().timeIntervalSince($0) < 20 } ?? false
+                if let fix, fresh {
+                    let away = Geo.distance(fix, anchor)
+                    if away < 120 {
+                        steps[5].status = .passed
+                        DiagLog.shared.note("self-test: fix survived the tunnel "
+                            + "(\(Int(away))m from target) — burst mode is safe")
+                    } else {
+                        steps[5].status = .failed(
+                            "Simulation ended with the tunnel (\(Int(away)) m from target) — "
+                            + "keep the tunnel persistent while spoofing")
+                        DiagLog.shared.note("self-test: fix did NOT survive the tunnel "
+                            + "(\(Int(away))m) — burst mode is not viable on this device")
+                    }
+                } else {
+                    steps[5].status = .skipped("No fresh location fix to compare")
+                }
+                // Rebuild so the next step has a live tunnel to talk to.
+                await session.connect()
+                if session.connection.isReady {
+                    try? await session.setLocation(latitude: anchor.latitude,
+                                                   longitude: anchor.longitude)
+                }
+            }
+
+            // 7. clear
+            try set(6, .running)
             do {
                 try await session.clearLocation()
-                steps[5].status = .passed
+                steps[6].status = .passed
             } catch {
-                return fail(5, error.localizedDescription)
+                return fail(6, error.localizedDescription)
             }
 
             DiagLog.shared.note("self-test: all steps passed")
