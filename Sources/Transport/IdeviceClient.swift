@@ -23,6 +23,8 @@ actor IdeviceClient {
     private var device: OpaquePointer?
     private var connected = false
     private var mounted = false
+    /// A failed mount is not fatal: the location service is already open at this point.
+    private var mountFailed = false
 
     // MARK: - Connection
 
@@ -89,7 +91,8 @@ actor IdeviceClient {
             throw SinkError.notConnected("Developer Mode is off — enable it in Settings → Privacy & Security")
         }
 
-        if !mounted {
+        if !mounted && !mountFailed {
+          do {
             DiagLog.shared.log("ffi: mounting personalised disk image")
             let assets = try await DeveloperDiskImage.assets(for: version) { name, fraction in
                 DiagLog.shared.log("ddi: \(name) \(Int(fraction * 100))%")
@@ -125,6 +128,15 @@ actor IdeviceClient {
             }
             mounted = true
             DiagLog.shared.log("ffi: disk image mounted")
+          } catch {
+            // The DVT location service was already opened with the RSD handshake, so a
+            // failed image mount does not block setting a location — it only blocks the
+            // services that need the developer image (process control, screenshots).
+            mountFailed = true
+            DiagLog.shared.log("ffi: disk image not mounted — \(error.localizedDescription)")
+            DiagLog.shared.note("ddi: continuing without the image; location writes "
+                                + "do not need it")
+          }
         }
 
         return DeveloperStatus(developerMode: enabled == 1,
