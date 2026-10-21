@@ -127,6 +127,7 @@ final class DeviceSession: ObservableObject, LocationSink {
         guard !connection.isReady else { return }
         connection = .preparing("Looking for the developer tunnel…")
         DiagLog.shared.note("connect: begin")
+        probeTunnel()
         do {
             try await Transport.shared.bringUp(session: self)
             connection = .ready(address: Transport.shared.dialedAddress ?? "tunnel")
@@ -135,7 +136,40 @@ final class DeviceSession: ObservableObject, LocationSink {
         } catch {
             connection = .failed(error.localizedDescription)
             DiagLog.shared.note("connect: failed — \(error.localizedDescription)")
+            offerPairingAfterReset(error.localizedDescription)
         }
+    }
+
+    /// Connects to the tunnel, says nothing, and reports what the device does. Tells a
+    /// rejected pairing (device waits, then resets after we speak) apart from a broken
+    /// forward (device closes immediately).
+    private func probeTunnel() {
+        let endpoints = TunnelProbe.candidates()
+        guard let theFirst = endpoints.first else { return }
+        var buffer = [CChar](repeating: 0, count: 256)
+        let status = theFirst.address.withCString { host in
+            wd_probe_tunnel(host, theFirst.port, &buffer, 256)
+        }
+        let result = String(cString: buffer)
+        if status == 0 {
+            DiagLog.shared.log("probe \(theFirst.address):\(theFirst.port) — \(result)")
+        } else {
+            DiagLog.shared.log("probe \(theFirst.address):\(theFirst.port) failed — \(result)")
+        }
+    }
+
+    /// A reset with a record already on disk means the device replaced its record for
+    /// this host: only a fresh device-initiated pairing fixes that, so start it instead
+    /// of failing quietly.
+    private func offerPairingAfterReset(_ message: String) {
+        let lowered = message.lowercased()
+        guard lowered.contains("reset") || lowered.contains("54") else { return }
+        guard !PairHostBroker.shared.isPairing else { return }
+        DiagLog.shared.note("connect: reset — starting the pairing flow the device accepts")
+        PairHostBroker.shared.onPaired = { [weak self] _ in
+            Task { await self?.connect() }
+        }
+        PairHostBroker.shared.start()
     }
 
     func disconnect() {

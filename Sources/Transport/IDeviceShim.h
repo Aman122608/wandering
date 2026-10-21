@@ -32,6 +32,10 @@ int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
 
 void wd_disconnect(WanderingDevice *dev);
 
+/// Connects, says nothing, and reports what the peer does. Diagnostic for telling a
+/// pairing rejection apart from a broken tunnel.
+int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len);
+
 /// Called (from a background thread) when the device wants a pairing PIN.
 /// The connect call blocks until `wd_submit_pin` or `wd_cancel_pin` is invoked.
 typedef void (*wd_pin_request_fn)(void *context);

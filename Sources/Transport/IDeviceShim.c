@@ -236,6 +236,112 @@ void wd_free(WanderingDevice *dev) {
     free(dev);
 }
 
+// MARK: - tunnel probe
+//
+// Answers one question before any handshake: does the device drop us on its own, or
+// only after we send something? A peer that closes without being spoken to means the
+// tunnel or the service behind it is wrong; one that waits for us and then resets is
+// rejecting the pairing. Those need completely different fixes, and guessing has cost
+// several rounds.
+
+#include <fcntl.h>
+#include <sys/select.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len) {
+    if (ip == NULL || out == NULL || out_len == 0) {
+        return -1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        snprintf(out, out_len, "bad address");
+        return -1;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        snprintf(out, out_len, "socket() failed");
+        return -1;
+    }
+
+    struct timeval stamp_start, stamp_now;
+    gettimeofday(&stamp_start, NULL);
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc != 0 && errno != EINPROGRESS) {
+        snprintf(out, out_len, "connect failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(fd, &wfds);
+    struct timeval wait = { .tv_sec = 3, .tv_usec = 0 };
+    if (select(fd + 1, NULL, &wfds, NULL, &wait) <= 0) {
+        snprintf(out, out_len, "no TCP handshake within 3s");
+        close(fd);
+        return -1;
+    }
+    int so_error = 0;
+    socklen_t so_len = sizeof(so_error);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+    if (so_error != 0) {
+        snprintf(out, out_len, "connect failed: %s", strerror(so_error));
+        close(fd);
+        return -1;
+    }
+    gettimeofday(&stamp_now, NULL);
+    long connect_ms = (stamp_now.tv_sec - stamp_start.tv_sec) * 1000
+                    + (stamp_now.tv_usec - stamp_start.tv_usec) / 1000;
+
+    // Say nothing. Whatever the peer does now is its own decision.
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    struct timeval quiet = { .tv_sec = 1, .tv_usec = 500000 };
+    int ready = select(fd + 1, &rfds, NULL, NULL, &quiet);
+    gettimeofday(&stamp_now, NULL);
+    long quiet_ms = (stamp_now.tv_sec - stamp_start.tv_sec) * 1000
+                  + (stamp_now.tv_usec - stamp_start.tv_usec) / 1000 - connect_ms;
+
+    if (ready == 0) {
+        snprintf(out, out_len,
+                 "connected in %ld ms, peer stayed silent for %ld ms — it waits for us",
+                 connect_ms, quiet_ms);
+    } else if (ready > 0) {
+        unsigned char buf[32];
+        ssize_t got = recv(fd, buf, sizeof(buf), 0);
+        if (got == 0) {
+            snprintf(out, out_len,
+                     "connected in %ld ms, peer closed after %ld ms without being spoken to "
+                     "(tunnel or service mismatch)", connect_ms, quiet_ms);
+        } else if (got > 0) {
+            char hex[3 * 32 + 1];
+            hex[0] = 0;
+            for (ssize_t i = 0; i < got && i < 16; i++) {
+                snprintf(hex + strlen(hex), sizeof(hex) - strlen(hex), "%02x ", buf[i]);
+            }
+            snprintf(out, out_len, "connected in %ld ms, peer sent %zd bytes immediately: %s",
+                     connect_ms, got, hex);
+        } else {
+            snprintf(out, out_len, "connected in %ld ms, probe read failed: %s",
+                     connect_ms, strerror(errno));
+        }
+    } else {
+        snprintf(out, out_len, "connected in %ld ms, probe select failed", connect_ms);
+    }
+
+    close(fd);
+    return 0;
+}
+
 // MARK: - connect
 
 int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
