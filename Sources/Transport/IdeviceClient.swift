@@ -134,8 +134,8 @@ actor IdeviceClient {
             // services that need the developer image (process control, screenshots).
             mountFailed = true
             DiagLog.shared.log("ffi: disk image not mounted — \(error.localizedDescription)")
-            DiagLog.shared.note("ddi: continuing without the image; location writes "
-                                + "do not need it")
+            DiagLog.shared.log("ddi: continuing without the image; location writes "
+                               + "do not need it")
           }
         }
 
