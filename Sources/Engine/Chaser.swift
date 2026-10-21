@@ -36,7 +36,7 @@ final class Chaser: NSObject, ObservableObject {
     var audioTickPeriod: Double = 0.25
 
     private let manager = CLLocationManager()
-    private let jitter = BreathingJitter()
+    private var jitter = BreathingJitter()
 
     private var path: [CLLocationCoordinate2D] = []
     private var lengths: [Double] = [0]
@@ -110,7 +110,7 @@ final class Chaser: NSObject, ObservableObject {
         // first seconds look broken.
         if let lastAccepted, Date().timeIntervalSince(lastFixAt) < staleFix {
             append(lastAccepted)
-            write(position: lastAccepted, force: true)
+            write(position: lastAccepted.coordinate, force: true)
             status = "following"
         } else {
             status = "waiting for GPS"
