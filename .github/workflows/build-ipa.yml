@@ -1,0 +1,94 @@
+name: Build Wandering IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  IDEVICE_RELEASE: idevice-v0.1.68
+  IDEVICE_REPO: Aman122608/wander-free
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          BEST_PATH=""
+          BEST_VER=""
+          for app in /Applications/Xcode*.app; do
+            ver="$(basename "$app" | sed -E 's#^Xcode_?##; s#\.app$##')"
+            case "$ver" in ""|*[!0-9.]*) continue ;; esac
+            if [ -z "$BEST_VER" ] || [ "$(printf '%s\n%s\n' "$BEST_VER" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+              BEST_VER="$ver"; BEST_PATH="$app"
+            fi
+          done
+          [ -z "$BEST_PATH" ] && BEST_PATH="/Applications/Xcode.app"
+          sudo xcode-select -s "${BEST_PATH}/Contents/Developer"
+          xcodebuild -version
+          echo "DEVELOPER_DIR=${BEST_PATH}/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Fetch idevice FFI
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${IDEVICE_REPO}/releases/download/${IDEVICE_RELEASE}/idevice-ios-arm64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/idevice.zip" "$URL"
+          mkdir -p vendor
+          unzip -q -o "$RUNNER_TEMP/idevice.zip" -d vendor
+          ls -la vendor vendor/include
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build & package
+        run: |
+          chmod +x build_ipa.sh
+          ./build_ipa.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wandering-IPA
+          path: build/Wandering.ipa
+          if-no-files-found: error
+
+      - name: Upload dSYMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wandering-dSYM
+          path: build/symbols
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wandering-build-log
+          path: build/build.log
+          if-no-files-found: warn
+
+      - name: Show log tail on failure
+        if: failure()
+        run: tail -n 120 build/build.log || true
+
+      - name: Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Wandering build #${{ github.run_number }}
+          body: |
+            Unsigned IPA from `${{ github.sha }}`.
+
+            Install with SideStore/AltStore/ESign on your own Apple ID, then open
+            Wandering once and import your pairing file.
+          files: build/Wandering.ipa
+          prerelease: true

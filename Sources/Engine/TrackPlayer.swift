@@ -1,0 +1,208 @@
+import CoreLocation
+import Foundation
+
+/// Plays a coordinate stream into a `LocationSink`, then holds the last point.
+///
+/// Design notes that matter in the field:
+/// * writes are serialised (one in flight, ever) — the developer service refuses
+///   a second write while one is outstanding, and a refusal is silently dropped;
+/// * a pause sends nothing at all, because a still device that keeps receiving
+///   the same coordinate looks frozen;
+/// * the final position is re-asserted every few seconds, otherwise iOS re-queries
+///   and the fix drifts back to the real GPS.
+@MainActor
+final class TrackPlayer: ObservableObject {
+    enum Phase: Equatable {
+        case idle
+        case playing
+        case paused
+        case holding
+        case failed(String)
+
+        var isActive: Bool {
+            switch self {
+            case .playing, .paused, .holding: return true
+            case .idle, .failed: return false
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .idle: return "Idle"
+            case .playing: return "Moving"
+            case .paused: return "Paused"
+            case .holding: return "Holding"
+            case .failed: return "Failed"
+            }
+        }
+    }
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var progress: Double = 0
+    @Published private(set) var current: CLLocationCoordinate2D?
+    @Published private(set) var writtenCount = 0
+    @Published private(set) var speedKmh: Double = 0
+    @Published private(set) var lastError: String?
+
+    /// Playback rate multiplier: 1 = real time, 4 = four times faster.
+    @Published var rate: Double = 1.0
+
+    private var sink: LocationSink?
+    private var task: Task<Void, Never>?
+    private var pauseFlag = false
+    private var stopFlag = false
+
+    var isBusy: Bool { phase.isActive }
+
+    // MARK: - Control
+
+    func play(samples: [TrackSample], sink: LocationSink, rate: Double = 1.0,
+              holdAtEnd: Bool = true) {
+        stop(clear: false)
+        guard !samples.isEmpty else { return }
+        self.sink = sink
+        self.rate = max(rate, 0.1)
+        pauseFlag = false
+        stopFlag = false
+        progress = 0
+        writtenCount = 0
+        speedKmh = 0
+        lastError = nil
+        phase = .playing
+
+        let start = Date()
+        task = Task { [weak self] in
+            guard let self else { return }
+            var failures = 0
+            var previous = samples.first?.coordinate
+            var index = 0
+
+            while index < samples.count {
+                if self.stopFlag || Task.isCancelled { return }
+                if self.pauseFlag {
+                    await self.slice(0.2)
+                    continue
+                }
+                let sample = samples[index]
+                if index > 0 {
+                    await self.slice(sample.delay / self.rate)
+                    if self.stopFlag || Task.isCancelled { return }
+                }
+                do {
+                    try await sink.setLocation(latitude: sample.coordinate.latitude,
+                                               longitude: sample.coordinate.longitude)
+                    failures = 0
+                } catch {
+                    failures += 1
+                    self.lastError = error.localizedDescription
+                    DiagLog.shared.note("write failed (\(failures)): \(error.localizedDescription)")
+                    if failures >= 3 {
+                        self.phase = .failed(error.localizedDescription)
+                        return
+                    }
+                }
+
+                if let previous {
+                    let d = Geo.distance(previous, sample.coordinate)
+                    let dt = max(sample.delay, 0.05)
+                    self.speedKmh = d / dt * 3.6
+                }
+                previous = sample.coordinate
+                self.current = sample.coordinate
+                self.writtenCount += 1
+                self.progress = Double(index + 1) / Double(samples.count)
+                index += 1
+            }
+
+            let elapsed = Date().timeIntervalSince(start)
+            DiagLog.shared.note("track finished: \(samples.count) writes in "
+                + String(format: "%.1f", elapsed) + "s")
+
+            guard holdAtEnd, let anchor = samples.last?.coordinate,
+                  !self.stopFlag else {
+                self.phase = .idle
+                return
+            }
+            self.phase = .holding
+            var tick = 0
+            while !self.stopFlag && !Task.isCancelled {
+                if self.pauseFlag {
+                    await self.slice(0.2)
+                    continue
+                }
+                let drift = TrackBuilder.breathingHold(anchor: anchor, minutes: 4.0 / 60,
+                                                       tick: 4, radius: 2.0)
+                if let s = drift.first {
+                    try? await sink.setLocation(latitude: s.coordinate.latitude,
+                                                longitude: s.coordinate.longitude)
+                    self.current = s.coordinate
+                }
+                tick += 1
+                if tick % 15 == 0 {
+                    DiagLog.shared.note("hold alive (\(tick * 4)s)")
+                }
+                await self.slice(4)
+            }
+        }
+    }
+
+    /// Send one coordinate and stay there (a teleport).
+    func teleport(to coordinate: CLLocationCoordinate2D, sink: LocationSink,
+                  holdAtEnd: Bool = true) {
+        let samples = [TrackSample(coordinate: coordinate, delay: 0)]
+        play(samples: samples, sink: sink, rate: 1, holdAtEnd: holdAtEnd)
+    }
+
+    func pause() {
+        guard phase == .playing || phase == .holding else { return }
+        pauseFlag = true
+        if phase == .playing { phase = .paused }
+        DiagLog.shared.note("pause")
+    }
+
+    func resume() {
+        guard phase == .paused else { return }
+        pauseFlag = false
+        phase = .playing
+        DiagLog.shared.note("resume")
+    }
+
+    func stop(clear: Bool = false) {
+        stopFlag = true
+        task?.cancel()
+        task = nil
+        pauseFlag = false
+        let sink = self.sink
+        self.sink = nil
+        phase = .idle
+        progress = 0
+        speedKmh = 0
+        if clear, let sink {
+            Task { try? await sink.clearLocation() }
+            DiagLog.shared.note("stop + clear")
+        } else if sink != nil {
+            DiagLog.shared.note("stop (device keeps last coordinate until it is cleared)")
+        }
+    }
+
+    func slideToError(_ message: String) {
+        phase = .failed(message)
+    }
+
+    // MARK: - Timing
+
+    /// Sleeps in slices so pause/stop react within ~150 ms even on a 5 s hold tick.
+    private func slice(_ interval: TimeInterval) async {
+        var remaining = max(interval, 0)
+        while remaining > 0 {
+            if stopFlag || Task.isCancelled { return }
+            if pauseFlag {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                continue
+            }
+            let step = min(remaining, 0.15)
+            try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+            remaining -= step
+        }
+    }
+}
