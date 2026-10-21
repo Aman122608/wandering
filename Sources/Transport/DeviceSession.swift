@@ -99,6 +99,8 @@ final class DeviceSession: ObservableObject, LocationSink {
     /// One connect at a time. The supervisor, the player's retry and the UI all ask for a
     /// connection, and each one used to launch its own six-second probe sweep — that pile-up
     /// is what made the app crawl.
+    private var holdTask: Task<Void, Never>?
+    private var holdCoordinate: CLLocationCoordinate2D?
     private var connectInFlight = false
     private var lastConnectFailure: Date?
 
@@ -292,6 +294,7 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     func clearLocation() async throws {
+        endHold()
         if !connection.isReady {
             await connect()
             guard connection.isReady else {
@@ -334,6 +337,48 @@ final class DeviceSession: ObservableObject, LocationSink {
                                     + "write was accepted but did not take effect")
             }
         }
+    }
+
+    /// Pins a parked coordinate, re-sending every 4 s with a breathing offset.
+    ///
+    /// The shipping app does this for the same reason and says so in a comment: iOS
+    /// re-checks the simulated location, and a single write can be replaced by the real
+    /// fix. Four seconds is its cadence, and it is what makes Find My / Life360 show the
+    /// held point instead of snapping back.
+    func hold(at coordinate: CLLocationCoordinate2D) async {
+        holdTask?.cancel()
+        holdCoordinate = coordinate
+        guard lifetime == .persistent else { return }
+
+        holdTask = Task { [weak self] in
+            var jitter = BreathingJitter()
+            var tick = 0
+            while !Task.isCancelled {
+                let target = jitter.next(around: coordinate)
+                do {
+                    if useLockdown {
+                        try await self?.lockdown.setLocation(latitude: target.latitude,
+                                                             longitude: target.longitude)
+                    } else {
+                        try await Transport.shared.setLocation(latitude: target.latitude,
+                                                                longitude: target.longitude)
+                    }
+                    tick += 1
+                    if tick % 15 == 1 {
+                        DiagLog.shared.log("hold: still pinned (\(tick) resends)")
+                    }
+                } catch {
+                    DiagLog.shared.log("hold: resend failed — \(error.localizedDescription)")
+                }
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
+        }
+    }
+
+    /// Stops pinning. The last written coordinate stays until it is cleared.
+    func endHold() {
+        holdTask?.cancel()
+        holdTask = nil
     }
 
     /// One burst: open, write, close. Used when the supervisor detects the fix has

@@ -173,6 +173,9 @@ final class TrackPlayer: ObservableObject {
             DiagLog.shared.note("track finished: parked at "
                 + String(format: "%.5f", anchor.latitude) + ", "
                 + String(format: "%.5f", anchor.longitude))
+            // Stay here for real: re-send on a slow cadence so the parked point survives
+            // iOS re-checks, and stop only when the user stops.
+            await sink.hold(at: anchor)
             while !self.stopFlag && !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }

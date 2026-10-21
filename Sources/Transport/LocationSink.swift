@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 enum SinkError: LocalizedError {
@@ -29,11 +30,16 @@ protocol LocationSink: AnyObject {
     func clearLocation() async throws
     func beginStreaming() async
     func endStreaming() async
+    /// Park on this coordinate and keep it pinned. Networking apps resample a few seconds
+    /// later, and a point that was written once and never repeated can be replaced by the
+    /// real fix — re-sending every few seconds is what makes it stick.
+    func hold(at coordinate: CLLocationCoordinate2D) async
 }
 
 extension LocationSink {
     func beginStreaming() async {}
     func endStreaming() async {}
+    func hold(at coordinate: CLLocationCoordinate2D) async {}
 }
 
 /// Records writes without a device. Used by the engine tests and the preview.

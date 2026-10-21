@@ -318,6 +318,7 @@ final class AppState: ObservableObject {
     }
 
     func stop(clear: Bool) {
+        session.endHold()
         player.stop(clear: clear)
         supervisor.end()
     }
