@@ -104,6 +104,11 @@ final class AirplaneSequence: ObservableObject {
     }
 
     /// `move` performs the injection (teleport or route start).
+    ///
+    /// Order copied from the shipping app, which is the opposite of what intuition says:
+    /// the radio goes quiet FIRST, and only then is the tunnel dialled. Dialling while the
+    /// radio is still up gets refused, and dialling before the cycle leaves nothing for the
+    /// quiet period to protect — the tunnel is built inside it.
     func run(target: CLLocationCoordinate2D?,
              style: ShortcutStyle,
              shortcutOn: String,
@@ -116,25 +121,12 @@ final class AirplaneSequence: ObservableObject {
         lastOff = shortcutOff
 
         do {
-            phase = .waitingForTunnel
-            detail = "Connecting the tunnel first — it has to be up before the radios go off."
-            do {
-                try await connect()
-            } catch {
-                // Nothing to preserve once the radio drops, and LocalDevVPN cannot be
-                // dialled from inside Airplane Mode — this is the one ordering that
-                // cannot be worked around, so say it instead of cycling the radio.
-                throw SequenceError.message(
-                    "No tunnel to keep alive. Turn Wi-Fi on once so LocalDevVPN can "
-                    + "connect, then start again — Wandering will cycle the radios "
-                    + "itself for the write. (\(error.localizedDescription))")
-            }
-
-            // With Wi-Fi up there is nothing to gain from dropping the radios, and a
-            // cycle would only risk the tunnel. Straight to work.
+            // With Wi-Fi up there is nothing to gain from dropping the radios.
             if hasWiFi {
-                detail = "Wi-Fi is up — skipping the Airplane Mode cycle."
+                phase = .waitingForTunnel
+                detail = "Wi-Fi is up — connecting directly."
                 DiagLog.shared.note("airplane: skipped (Wi-Fi present)")
+                try await connect()
                 phase = .moving
                 await move()
                 phase = .finished
@@ -142,23 +134,48 @@ final class AirplaneSequence: ObservableObject {
                 return
             }
 
+            // Step 1: radio off.
             phase = .airplaneOn
             detail = "Running “\(shortcutOn)”."
             openShortcut(style: style, on: shortcutOn, off: shortcutOff, input: "on")
-            let wentOffline = await waitForRadiosOff(timeout: 25)
-            if !wentOffline {
-                detail = "Airplane Mode did not engage — trying the tunnel anyway."
-                DiagLog.shared.note("airplane: radios still up after 25s")
-            }
 
-            phase = .waitingForTunnel
-            detail = "Checking the tunnel still answers with the radios off."
-            guard await waitForTunnel(timeout: 20) else {
+            // 8 s, like the shipping app: dropping interfaces is fast, and every extra
+            // second here is signal lost for nothing.
+            let quiet = await waitForRadiosOff(timeout: 8)
+            if quiet {
+                DiagLog.shared.note("airplane: radio confirmed off — building the tunnel inside it")
+            } else {
                 throw SequenceError.message(
-                    "The tunnel stopped answering once the radios went off. "
-                    + "Reconnect LocalDevVPN and try again.")
+                    "Airplane Mode did not switch on. “\(shortcutOn)” may be missing, "
+                    + "renamed, or was cancelled. Nothing was turned off, so nothing "
+                    + "needs turning back on — set the shortcut up and try again.")
             }
 
+            // Step 2: build the tunnel now that the radio is quiet.
+            phase = .waitingForTunnel
+            var connected = false
+            var lastError = ""
+            for attempt in 1...6 {
+                detail = "Connecting the tunnel with the radio off (attempt \(attempt))."
+                do {
+                    try await connect()
+                    connected = true
+                    DiagLog.shared.note("airplane: tunnel up on attempt \(attempt)")
+                    break
+                } catch {
+                    lastError = error.localizedDescription
+                    DiagLog.shared.note("airplane: connect attempt \(attempt) failed — \(lastError)")
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                }
+            }
+            guard connected else {
+                throw SequenceError.message(
+                    "The tunnel would not come up with the radio off. Check that "
+                    + "LocalDevVPN is installed and allowed to run in the background. "
+                    + "(\(lastError))")
+            }
+
+            // Step 3: write, then put the radio back — always, even if the write failed.
             phase = .moving
             detail = target.map { "Setting \(Router.format($0))." } ?? "Starting the route."
             await move()

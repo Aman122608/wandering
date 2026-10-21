@@ -71,9 +71,10 @@ final class AppState: ObservableObject {
 
     init() {
         supervisor.bind(player: player, session: session)
-        network.onConnectivityReturned = { [weak self] in
-            self?.airplane.finishEarly()
-        }
+        // Deliberately not wired: the sequence restores the radio itself, and reacting to
+        // "connectivity returned" also fires while the Shortcut's own settle brings Wi-Fi
+        // briefly back — which would abort a run that is working. finishEarly() stays for
+        // a manual escape hatch.
         player.onWriteSuccess = { [weak self] _ in
             self?.supervisor.recordWrite()
         }
