@@ -71,3 +71,25 @@ unzip -q /tmp/idevice.zip -d vendor
 brew install xcodegen
 ./build_ipa.sh     # → build/Wandering.ipa (unsigned)
 ```
+
+## Tunnel facts (verified on a real iPhone, iOS 27.2)
+
+These cost a lot of builds to establish, so they are written down:
+
+- **Dial `10.7.0.1:49152`, not the utun peer.** LocalDevVPN is a packet *swapper*: the
+  app dials the fake-client address and the provider swaps src/dst so `remotepairingd`
+  sees a connection from inside its own subnet. Dialing the utun peer (e.g. `10.7.1.1`)
+  accepts TCP and then closes after ~20 ms — that is what produced every
+  `Connection reset by peer` (errno 54) and sent us chasing pairing for several builds.
+- **The pairing file was never the problem.** Once the address was right, the imported
+  record handshook on the first try. Do not offer re-pairing on a reset until a probe
+  shows the device *waited for us* and still refused.
+- **The personalised disk image fails to mount on iOS 27.2** (`ImageMountFailed`, 15/0)
+  and is **not needed** for location: the DVT location service is opened during the RSD
+  handshake, before any mount. Mount is best-effort; failure only affects services that
+  need the image (process control, screenshots).
+- **`com.apple.dt.simulatelocation` over lockdownd (`10.7.0.1:62078`) is not reachable**
+  through this tunnel — the port closes immediately. Kept in the tree as a dead fallback
+  with its probe, because it would be the cheaper path if a future tunnel exposes it.
+- A parked spoof needs **no connection**: writes land, the tunnel closes, the location
+  stays. Movement needs the tunnel open for the duration of the stream.
