@@ -9,7 +9,8 @@ struct SettingsScreen: View {
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage("holdAtEnd") private var holdAtEnd = true
     @AppStorage("airplaneInit") private var airplaneInit = false
-    @AppStorage("airplaneShortcutOn") private var airplaneShortcutOn = "Airplane On"
+    @AppStorage("airplaneShortcutStyle") private var airplaneShortcutStyle = "singleSwitch"
+    @AppStorage("airplaneShortcutOn") private var airplaneShortcutOn = "Wander Cellular Mode"
     @AppStorage("airplaneShortcutOff") private var airplaneShortcutOff = "Airplane Off"
 
     @State private var importingPairing = false
@@ -125,8 +126,20 @@ struct SettingsScreen: View {
                                 }
                             }
                             if airplaneInit {
-                                shortcutField("Turns it on", text: $airplaneShortcutOn)
-                                shortcutField("Turns it off", text: $airplaneShortcutOff)
+                                Picker("Shortcut style", selection: $airplaneShortcutStyle) {
+                                    Text("One Shortcut").tag("singleSwitch")
+                                    Text("Two Shortcuts").tag("twoShortcuts")
+                                }
+                                .pickerStyle(.segmented)
+                                if airplaneShortcutStyle == "singleSwitch" {
+                                    shortcutField("Shortcut name", text: $airplaneShortcutOn)
+                                    Text("Run with input text on/off — the same shape the paid app ships.")
+                                        .font(Tokens.caption)
+                                        .foregroundStyle(Tokens.inkSecondary)
+                                } else {
+                                    shortcutField("Turns it on", text: $airplaneShortcutOn)
+                                    shortcutField("Turns it off", text: $airplaneShortcutOff)
+                                }
                                 PrimaryButton(title: "Run the sequence",
                                               systemImage: "airplane",
                                               role: .neutral,
@@ -135,6 +148,8 @@ struct SettingsScreen: View {
                                         await state.airplane.run(
                                             target: state.waypoints.first?.coordinate
                                                 ?? state.resumableTarget,
+                                            style: airplaneShortcutStyle == "singleSwitch"
+                                                ? .singleSwitch : .twoShortcuts,
                                             shortcutOn: airplaneShortcutOn,
                                             shortcutOff: airplaneShortcutOff,
                                             connect: { await state.session.connect() },

@@ -75,8 +75,22 @@ final class AirplaneSequence: ObservableObject {
         if monitorStarted { monitor.cancel() }
     }
 
+    /// How the radio is toggled.
+    enum ShortcutStyle: String, CaseIterable, Identifiable {
+        /// One Shortcut that flips the radio from its input text — the shape the
+        /// paid app ships ("Wander Cellular Mode", input `on` / `off`), so an
+        /// already-installed file can be reused as-is.
+        case singleSwitch
+        /// Two separate Shortcuts, one per state.
+        case twoShortcuts
+
+        var id: String { rawValue }
+        var title: String { self == .singleSwitch ? "One Shortcut" : "Two Shortcuts" }
+    }
+
     /// `move` performs the injection (teleport or route start).
     func run(target: CLLocationCoordinate2D?,
+             style: ShortcutStyle,
              shortcutOn: String,
              shortcutOff: String,
              connect: @escaping () async throws -> Void,
@@ -107,7 +121,7 @@ final class AirplaneSequence: ObservableObject {
 
             phase = .airplaneOn
             detail = "Running “\(shortcutOn)”."
-            openShortcut(named: shortcutOn, input: "on")
+            openShortcut(style: style, on: shortcutOn, off: shortcutOff, input: "on")
             let wentOffline = await waitForRadiosOff(timeout: 25)
             if !wentOffline {
                 detail = "Airplane Mode did not engage — trying the tunnel anyway."
@@ -128,7 +142,7 @@ final class AirplaneSequence: ObservableObject {
 
             phase = .airplaneOff
             detail = "Running “\(shortcutOff)”."
-            openShortcut(named: shortcutOff, input: "off")
+            openShortcut(style: style, on: shortcutOn, off: shortcutOff, input: "off")
 
             phase = .restoring
             detail = "Waiting for a radio to come back (up to 25 s — modem re-attach is slow)."
@@ -141,10 +155,10 @@ final class AirplaneSequence: ObservableObject {
             phase = .failed(error.message)
             detail = error.message
             DiagLog.shared.note("airplane: failed — \(error.message)")
-            openShortcut(named: shortcutOff, input: "off")
+            openShortcut(style: style, on: shortcutOn, off: shortcutOff, input: "off")
         } catch {
             phase = .failed(error.localizedDescription)
-            openShortcut(named: shortcutOff, input: "off")
+            openShortcut(style: style, on: shortcutOn, off: shortcutOff, input: "off")
         }
         DiagLog.shared.note("airplane: \(phase.label)")
     }
@@ -168,14 +182,20 @@ final class AirplaneSequence: ObservableObject {
     /// Runs the shortcut through Shortcuts' x-callback scheme. The callback is not
     /// required for the sequence to work — the radios themselves are the evidence —
     /// but it makes the Shortcut able to report back later.
-    private func openShortcut(named name: String, input: String) {
+    private func openShortcut(style: ShortcutStyle, on: String, off: String, input: String) {
+        let name = style == .singleSwitch ? on : (input == "on" ? on : off)
         guard !name.isEmpty,
               let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: "shortcuts://x-callback-url/run-shortcut"
                             + "?name=\(encoded)&input=text&text=\(input)"
                             + "&x-success=wandering://airplane-ok"
                             + "&x-error=wandering://airplane-missing") else { return }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        DiagLog.shared.note("airplane: running Shortcut \"\(name)\" with input \(input)")
+        UIApplication.shared.open(url, options: [:]) { ok in
+            if !ok {
+                DiagLog.shared.log("airplane: Shortcuts refused to open \"\(name)\"")
+            }
+        }
     }
 
     private func waitForNetwork(timeout: TimeInterval) async -> Bool {
