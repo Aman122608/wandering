@@ -283,9 +283,9 @@ int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len) {
     fd_set wfds;
     FD_ZERO(&wfds);
     FD_SET(fd, &wfds);
-    struct timeval wait = { .tv_sec = 3, .tv_usec = 0 };
+    struct timeval wait = { .tv_sec = 1, .tv_usec = 0 };
     if (select(fd + 1, NULL, &wfds, NULL, &wait) <= 0) {
-        snprintf(out, out_len, "no TCP handshake within 3s");
+        snprintf(out, out_len, "no TCP handshake within 1s");
         close(fd);
         return -1;
     }

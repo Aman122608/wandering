@@ -52,6 +52,9 @@ enum TunnelProbe {
     static func discover(logger: ((String) -> Void)? = nil) -> TunnelEndpoint? {
         var fallback: TunnelEndpoint?
 
+        // A dial that is going to work answers in milliseconds. Anything slower is a
+        // dead address, and walking seven of them at three seconds each burned a whole
+        // radio-cycle budget before this was tightened.
         for candidate in candidates() {
             var buffer = [CChar](repeating: 0, count: 256)
             let status = candidate.address.withCString {

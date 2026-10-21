@@ -121,8 +121,13 @@ final class AirplaneSequence: ObservableObject {
             do {
                 try await connect()
             } catch {
+                // Nothing to preserve once the radio drops, and LocalDevVPN cannot be
+                // dialled from inside Airplane Mode — this is the one ordering that
+                // cannot be worked around, so say it instead of cycling the radio.
                 throw SequenceError.message(
-                    "Connect LocalDevVPN, then retry: \(error.localizedDescription)")
+                    "No tunnel to keep alive. Turn Wi-Fi on once so LocalDevVPN can "
+                    + "connect, then start again — Wandering will cycle the radios "
+                    + "itself for the write. (\(error.localizedDescription))")
             }
 
             // With Wi-Fi up there is nothing to gain from dropping the radios, and a
@@ -234,14 +239,22 @@ final class AirplaneSequence: ObservableObject {
         return !hasWiFi && !onCellular
     }
 
+    /// Waits for the tunnel to answer again after the radio comes back down, retrying
+    /// rather than sampling once — LocalDevVPN needs a moment to reinstall its route.
     private func waitForTunnel(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
+        var attempt = 0
         while Date() < deadline {
+            attempt += 1
             let reachable = await Task.detached(priority: .userInitiated) {
                 TunnelProbe.discover() != nil
             }.value
-            if reachable { return true }
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            if reachable {
+                DiagLog.shared.note("airplane: tunnel answered on attempt \(attempt)")
+                return true
+            }
+            DiagLog.shared.note("airplane: tunnel silent (attempt \(attempt)) — retrying")
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
         return false
     }
