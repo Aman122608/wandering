@@ -87,8 +87,8 @@ enum TrackBuilder {
             samples = insertPauses(samples, options: options)
         }
         if options.jitter || options.sharingMode {
-            let radius = max(options.preset.jitterRadius, options.sharingMode ? 1.5 : 0)
-            samples = addJitter(samples, radius: radius)
+            let wanted = max(options.preset.jitterRadius, options.sharingMode ? 0.75 : 0)
+            samples = addJitter(samples, radius: min(wanted, maxJitterRadius))
         }
         return samples
     }
@@ -175,6 +175,11 @@ enum TrackBuilder {
     }
 
     // MARK: - Jitter
+
+    /// Hard ceiling on apparent GPS noise: 1.5 m across the worst case, i.e. a
+    /// 0.75 m radius. Anything wider is visible as jumping on Life360/Find My — a
+    /// 2.5 m offset at highway speed reads as a car sliding sideways off the road.
+    static let maxJitterRadius = 0.75
 
     /// Correlated GPS error. Independent per-sample noise on a 0.5 s cadence
     /// manufactures fake speed spikes (2 x 2.5 m in half a second = 36 km/h of

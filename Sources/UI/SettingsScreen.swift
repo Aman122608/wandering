@@ -146,6 +146,52 @@ struct SettingsScreen: View {
                                               isEnabled: !state.airplane.phase.isRunning) {
                                     state.runCellularSequence()
                                 }
+                            }
+                        }
+                    }
+
+                    Panel {
+                        VStack(alignment: .leading, spacing: Tokens.s3) {
+                            SectionLabel(text: "Follow me")
+                            Text("Replays the road you actually drive, but never reports "
+                                 + "faster than the cap — so you fall behind at speed and "
+                                 + "close the gap when you slow down or stop.")
+                                .font(Tokens.caption)
+                                .foregroundStyle(Tokens.inkSecondary)
+
+                            HStack {
+                                Text("Max speed").font(Tokens.body(15))
+                                Spacer()
+                                Text("\(Int(state.chaser.capKmh)) km/h")
+                                    .font(Tokens.display(18))
+                            }
+                            Slider(value: Binding(
+                                get: { state.chaser.capKmh },
+                                set: { state.chaser.capKmh = $0 }
+                            ), in: 10...130, step: 5)
+                                .tint(Tokens.accent)
+
+                            HStack(spacing: Tokens.s4) {
+                                readout("Reported",
+                                        String(format: "%.0f", state.chaser.reportedSpeedKmh) + " km/h")
+                                readout("Behind by",
+                                        String(format: "%.0f", state.chaser.gapMeters) + " m")
+                            }
+
+                            PrimaryButton(title: state.chaser.isRunning ? "Stop chase" : "Start chase",
+                                          systemImage: state.chaser.isRunning
+                                            ? "stop.circle" : "figure.walk.motion",
+                                          role: state.chaser.isRunning ? .destructive : .primary) {
+                                if state.chaser.isRunning {
+                                    state.stopChase()
+                                } else {
+                                    state.startChase()
+                                }
+                            }
+                            Text(state.chaser.status)
+                                .font(Tokens.caption)
+                                .foregroundStyle(state.chaser.isRunning ? Tokens.accent
+                                                 : Tokens.inkSecondary)
                         }
                     }
 
@@ -241,6 +287,15 @@ struct SettingsScreen: View {
                 Text(state.session.importError ?? "")
             }
             .onAppear { state.session.refreshPairings() }
+        }
+    }
+
+    private func readout(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(Tokens.caption)
+                .foregroundStyle(Tokens.inkSecondary)
+            Text(value).font(Tokens.display(18))
         }
     }
 }

@@ -60,6 +60,10 @@ final class AppState: ObservableObject {
     let airplane = AirplaneSequence()
     let supervisor = SessionSupervisor()
     let network = NetworkMonitor()
+    let chaser = Chaser()
+
+    /// Set when the user asked for chase mode, so a cellular start knows what to run.
+    @Published var chaseRequested = false
 
     /// Set when starting without Wi-Fi, so the UI can ask before touching the radios.
     @Published var cellularConsentNeeded = false
@@ -197,6 +201,10 @@ final class AppState: ObservableObject {
 
     /// Runs whatever the user pressed, once consent is in hand.
     func performStart() {
+        if chaseRequested {
+            chaser.start(sink: session)
+            return
+        }
         if selectedRoute != nil {
             performStartRoute()
         } else if let target = waypoints.first?.coordinate {
@@ -235,7 +243,18 @@ final class AppState: ObservableObject {
     }
 
     func startSelectedRoute() {
+        chaseRequested = false
         gate { self.performStartRoute() }
+    }
+
+    func startChase() {
+        chaseRequested = true
+        gate { self.performStart() }
+    }
+
+    func stopChase() {
+        chaseRequested = false
+        Task { await chaser.stop() }
     }
 
     private func performStartRoute() {
@@ -259,6 +278,7 @@ final class AppState: ObservableObject {
     }
 
     func teleport(to coordinate: CLLocationCoordinate2D) {
+        chaseRequested = false
         gate { self.performTeleport(to: coordinate) }
     }
 
