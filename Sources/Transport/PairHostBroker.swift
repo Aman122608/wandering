@@ -51,11 +51,11 @@ final class PairHostBroker: ObservableObject {
                 PairHostBroker.shared.code = nil
                 if status == 0, let entry = PairingStore.adopt(destination) {
                     PairHostBroker.shared.message = "Paired with \(entry.name)"
-                    DiagLog.PairHostBroker.shared.note("pairing: paired, record saved as \(entry.name)")
+                    DiagLog.shared.note("pairing: paired, record saved as \(entry.name)")
                     PairHostBroker.shared.onPaired?(entry)
                 } else {
                     PairHostBroker.shared.message = detail.isEmpty ? "Pairing failed" : detail
-                    DiagLog.PairHostBroker.shared.log("pairing: failed — \(PairHostBroker.shared.message ?? "")")
+                    DiagLog.shared.log("pairing: failed — \(PairHostBroker.shared.message ?? "")")
                 }
             }
         }
