@@ -38,6 +38,7 @@ struct MapScreen: View {
         .safeAreaInset(edge: .top, spacing: 0) { topBar }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: Tokens.s2) {
+                followMeCard
                 statusCard
                 controlPanel
             }
@@ -110,6 +111,7 @@ struct MapScreen: View {
     }
 
     private var statusTitle: String {
+        if state.chaser.isRunning && state.chaser.hasFix { return "Following you" }
         if let verification = state.session.lastVerification, !verification.tookEffect {
             return "Write accepted, device did not move"
         }
@@ -119,6 +121,14 @@ struct MapScreen: View {
     }
 
     private var statusDetail: String? {
+        if state.chaser.isRunning {
+            return String(format: "Cap %.0f mph · reporting %.0f mph · %d m behind · "
+                         + "%d writes",
+                         state.chaser.capMph,
+                         state.chaser.reportedSpeedKmh / 1.609344,
+                         Int(state.chaser.gapMeters),
+                         state.chaser.writeCount)
+        }
         if let verification = state.session.lastVerification, !verification.tookEffect {
             return "The developer service took the coordinate but CoreLocation kept the "
                  + "real position. Send the log — this is the case worth chasing."
@@ -132,6 +142,82 @@ struct MapScreen: View {
             return base
         }
         return "Tap the map to drop a pin, then Simulate. Or search an address below."
+    }
+
+    // MARK: - Follow me
+
+    /// Chase mode, on the screen you are actually looking at, with the numbers that say
+    /// whether it is doing anything.
+    private var followMeCard: some View {
+        VStack(alignment: .leading, spacing: Tokens.s2) {
+            HStack(spacing: Tokens.s2) {
+                Image(systemName: "figure.walk.motion")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(state.chaser.isRunning ? Tokens.live : Tokens.inkSecondary)
+                Text("Follow me").font(Tokens.body(15))
+                Spacer()
+                Button {
+                    showSettings = true
+                } label: {
+                    Text("\(Int(state.chaser.capMph)) mph cap")
+                        .font(Tokens.mono(12))
+                        .foregroundStyle(Tokens.inkSecondary)
+                }
+                Button {
+                    if state.chaser.isRunning {
+                        state.stopChase()
+                    } else {
+                        state.startChase()
+                    }
+                } label: {
+                    Text(state.chaser.isRunning ? "Stop" : "Start")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(state.chaser.isRunning ? Tokens.danger : Tokens.accent)
+                        .padding(.horizontal, Tokens.s3)
+                        .padding(.vertical, 6)
+                        .background(Tokens.surface, in: Capsule())
+                        .overlay { Capsule().strokeBorder(Tokens.hairline, lineWidth: 1) }
+                }
+            }
+
+            if state.chaser.isRunning {
+                HStack(spacing: Tokens.s3) {
+                    stat(String(format: "%.0f", state.chaser.reportedSpeedKmh / 1.609344),
+                         "mph now")
+                    stat(String(format: "%.0f", state.chaser.gapMeters), "m behind")
+                    stat(state.chaser.hasFix
+                         ? String(format: "%.0f", state.chaser.accuracyMeters) : "—", "m GPS")
+                    stat("\(state.chaser.writeCount)", "writes")
+                }
+                Text(state.chaser.status
+                     + (state.chaser.hasFix ? "" : "  ·  no usable fix"))
+                    .font(Tokens.caption)
+                    .foregroundStyle(state.chaser.hasFix ? Tokens.inkSecondary : Tokens.danger)
+                if state.chaser.gapMeters > 1 {
+                    Text("You are \(Int(state.chaser.gapMeters)) m ahead of the reported "
+                         + "position. It closes when you slow below the cap.")
+                        .font(Tokens.caption)
+                        .foregroundStyle(Tokens.inkSecondary)
+                }
+            } else {
+                Text("Reports your real drive, never faster than the cap. Tap Start, "
+                     + "then drive.")
+                    .font(Tokens.caption)
+                    .foregroundStyle(Tokens.inkSecondary)
+            }
+        }
+        .padding(Tokens.s3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Tokens.surface, in: RoundedRectangle(cornerRadius: Tokens.rMedium))
+        .padding(.horizontal, Tokens.s3)
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(value).font(Tokens.display(17)).monospacedDigit()
+            Text(label).font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Tokens.inkSecondary)
+        }
     }
 
     // MARK: - Guide

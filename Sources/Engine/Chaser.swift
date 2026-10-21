@@ -21,6 +21,12 @@ final class Chaser: NSObject, ObservableObject {
     @Published private(set) var gapMeters = 0.0
     @Published private(set) var status = "idle"
     @Published private(set) var fixAge: TimeInterval = .infinity
+    @Published private(set) var accuracyMeters: Double = .infinity
+    @Published private(set) var writeCount = 0
+    @Published private(set) var currentPoint: CLLocationCoordinate2D?
+    @Published private(set) var pathMeters: Double = 0
+    /// Writer state, so the card can say more than "it is on".
+    @Published private(set) var writesPerMinute = 0
 
     /// The cap, in km/h. Nothing above this is ever reported.
     @Published var capKmh: Double = UserDefaults.standard.object(forKey: "chaseCapKmh") as? Double ?? 60 {
@@ -80,9 +86,16 @@ final class Chaser: NSObject, ObservableObject {
         set {
             let mph = min(max(newValue, 3), 100)
             capKmh = mph * 1.609344
-            DiagLog.shared.log("chase: cap set to \(Int(mph)) mph")
+            // Dragging the slider fires this a hundred times; log the settled value.
+            let now = Date()
+            if now.timeIntervalSince(lastCapLog) > 1.2 {
+                lastCapLog = now
+                DiagLog.shared.log("chase: cap set to \(Int(mph)) mph")
+            }
         }
     }
+
+    private var lastCapLog = Date.distantPast
     var hasFix: Bool { Date().timeIntervalSince(lastFixAt) < staleFix }
 
     // MARK: - Lifecycle
@@ -188,6 +201,7 @@ final class Chaser: NSObject, ObservableObject {
             status = "no GPS — holding"
         }
         fixAge = Date().timeIntervalSince(lastFixAt)
+        accuracyMeters = lastFixAccuracy
     }
 
     private func maybeWrite() {
@@ -208,6 +222,9 @@ final class Chaser: NSObject, ObservableObject {
                                            longitude: target.longitude)
                 guard let self else { return }
                 self.consecutiveFailures = 0
+                self.writeCount += 1
+                self.currentPoint = target
+                self.pathMeters = self.lengths.last ?? 0
             } catch {
                 guard let self else { return }
                 self.consecutiveFailures += 1
@@ -296,6 +313,7 @@ extension Chaser: CLLocationManagerDelegate {
             let recovering = !self.hasFix
             self.lastFixAt = Date()
             self.lastFixAccuracy = best.horizontalAccuracy
+            self.accuracyMeters = best.horizontalAccuracy
             self.lastAccepted = best
             self.append(best)
             if recovering {
