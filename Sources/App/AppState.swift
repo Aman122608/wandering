@@ -236,7 +236,7 @@ final class AppState: ObservableObject {
                     ?? "Wander Cellular Mode",
                 shortcutOff: UserDefaults.standard.string(forKey: "airplaneShortcutOff")
                     ?? "Airplane Off",
-                connect: { await session.connect() },
+                connect: { await self.session.connect() },
                 move: { self.performStart() }
             )
         }
