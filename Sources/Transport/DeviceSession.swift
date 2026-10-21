@@ -87,6 +87,13 @@ final class DeviceSession: ObservableObject, LocationSink {
         lastWrite = nil
     }
 
+    // MARK: - Status
+
+    func update(developerMode: Bool, diskImageMounted: Bool) {
+        self.developerModeEnabled = developerMode
+        self.diskImageMounted = diskImageMounted
+    }
+
     // MARK: - Pairing
 
     func importPairingFile(_ url: URL) {

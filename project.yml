@@ -31,10 +31,16 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
-        # idevice FFI (built by .github/workflows/build-idevice.yml into vendor/)
-        SWIFT_INCLUDE_PATHS: $(SRCROOT)/vendor/include
-        HEADER_SEARCH_PATHS: $(SRCROOT)/vendor/include
-        LIBRARY_SEARCH_PATHS: $(SRCROOT)/vendor
+        # idevice FFI (built in Aman122608/wander-free, downloaded into vendor/)
+        SWIFT_INCLUDE_PATHS:
+          - $(SRCROOT)/vendor/include
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/vendor/include
+          - $(SRCROOT)/Sources/Transport
+          - $(SRCROOT)/Support
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/vendor
         OTHER_LDFLAGS: $(inherited) -lidevice_ffi
+        SWIFT_OBJC_BRIDGING_HEADER: Support/Bridging.h
         CLANG_ENABLE_MODULES: YES
         SWIFT_EMIT_LOC_STRINGS: YES

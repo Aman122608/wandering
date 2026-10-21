@@ -170,49 +170,34 @@ final class Router {
         return result
     }
 
-    /// Flattens Apple's per-step geometry into one polyline plus a speed per
-    /// segment. `segmentSpeeds.count == coordinates.count - 1` always holds.
+    /// Flattens Apple's per-step geometry into one polyline.
+    ///
+    /// MapKit exposes no per-step travel time (only `distance` and instructions),
+    /// so pacing uses the route's own average speed and the turn weighting below;
+    /// `segmentSpeeds` stays empty and the builder falls back to that average.
     private func planned(from route: MKRoute, index: Int) -> PlannedRoute {
         var coordinates: [CLLocationCoordinate2D] = []
-        var speeds: [Double] = []
-        let routeSpeed = route.distance / max(route.expectedTravelTime, 1)
 
         for step in route.steps where step.polyline.pointCount > 1 {
             var stepCoords = step.polyline.coordinates
             guard stepCoords.count >= 2 else { continue }
-
-            let speed = max(step.expectedTravelTime > 0
-                            ? step.distance / step.expectedTravelTime
-                            : routeSpeed, 0.5)
-
             while let first = stepCoords.first, let last = coordinates.last,
                   Geo.distance(last, first) < 0.5 {
                 stepCoords.removeFirst()
             }
             guard !stepCoords.isEmpty else { continue }
-
-            if coordinates.isEmpty {
-                coordinates.append(stepCoords.removeFirst())
-            }
-            for point in stepCoords {
-                coordinates.append(point)
-                speeds.append(speed)
-            }
+            coordinates.append(contentsOf: stepCoords)
         }
 
         if coordinates.count < 2 {
             coordinates = route.polyline.coordinates
-            speeds = []
-        }
-        if speeds.count != max(coordinates.count - 1, 0) {
-            speeds = []
         }
         return PlannedRoute(
             name: index == 0 ? "Fastest" : "Alternate \(index + 1)",
             coordinates: coordinates,
             distance: route.distance,
             expectedTravelTime: route.expectedTravelTime,
-            segmentSpeeds: speeds
+            segmentSpeeds: []
         )
     }
 }

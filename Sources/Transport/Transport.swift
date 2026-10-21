@@ -23,7 +23,7 @@ final class Transport {
             throw SinkError.notConnected("no pairing file imported")
         }
 
-        guard let endpoint = TunnelProbe.discover() else {
+        guard let endpoint = TunnelProbe.discover(logger: { DiagLog.shared.note($0) }) else {
             throw SinkError.notConnected(
                 "no tunnel on port \(TunnelProbe.developerPort) — is LocalDevVPN connected?"
             )
@@ -34,8 +34,8 @@ final class Transport {
         try await IdeviceClient.shared.connect(endpoint: endpoint, pairingFile: pairing)
 
         let status = try await IdeviceClient.shared.prepareDeveloperServices()
-        session.developerModeEnabled = status.developerMode
-        session.diskImageMounted = status.diskImageMounted
+        session.update(developerMode: status.developerMode,
+                       diskImageMounted: status.diskImageMounted)
         connected = true
     }
 

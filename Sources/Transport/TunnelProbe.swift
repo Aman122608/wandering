@@ -47,15 +47,15 @@ enum TunnelProbe {
     }
 
     /// Returns the first endpoint that accepts a TCP connection, or nil.
-    static func discover() -> TunnelEndpoint? {
+    static func discover(logger: ((String) -> Void)? = nil) -> TunnelEndpoint? {
         for candidate in candidates() {
             if canConnect(candidate, timeout: connectTimeout) {
-                DiagLog.shared.note("tunnel: \(candidate.address):\(candidate.port) reachable "
-                    + "(\(candidate.origin))")
+                logger?("tunnel: \(candidate.address):\(candidate.port) reachable "
+                        + "(\(candidate.origin))")
                 return candidate
             }
         }
-        DiagLog.shared.note("tunnel: no endpoint answered on port \(developerPort)")
+        logger?("tunnel: no endpoint answered on port \(developerPort)")
         return nil
     }
 
@@ -123,7 +123,7 @@ enum TunnelProbe {
                   addr.pointee.sa_family == UInt8(AF_INET) else { continue }
 
             let address = ipv4String(addr)
-            let netmask = pointer.pointee.ifa_netmask.map { ipv4String($0) }
+            let netmask = pointer.pointee.ifa_netmask.flatMap { ipv4String($0) }
             if let address {
                 out.append(TunnelInterface(name: name, address: address, netmask: netmask))
             }
