@@ -18,7 +18,7 @@ final class PinBroker: ObservableObject {
     /// displays, so answering automatically is correct and avoids blocking the
     /// handshake for three minutes behind a sheet nobody needs to fill in.
     nonisolated static func request() {
-        DiagLog.shared.note("pairing: pair-setup is asking for the code — answering 000000")
+        DiagLog.shared.log("pairing: pair-setup asked for the code — answering 000000")
         "000000".withCString { _ = wd_submit_pin($0) }
     }
 
