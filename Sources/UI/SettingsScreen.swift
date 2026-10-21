@@ -178,17 +178,20 @@ struct SettingsScreen: View {
                     Panel {
                         VStack(alignment: .leading, spacing: Tokens.s3) {
                             SectionLabel(text: "Connection")
-                            Toggle(isOn: Binding(
-                                get: { state.session.burstTunnel },
-                                set: { state.session.burstTunnel = $0 }
-                            )) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Ephemeral tunnel").font(Tokens.body(15))
-                                    Text("Keeps the VPN up only around each write, so the indicator "
-                                         + "flashes instead of staying on. Falls back automatically "
-                                         + "if the fix does not survive.")
-                                        .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
+                            VStack(alignment: .leading, spacing: Tokens.s2) {
+                                Text("Tunnel lifetime").font(Tokens.body(15))
+                                Text("The tunnel is only needed to set the location. Once the "
+                                     + "device has it, the spoof stays without any connection.")
+                                    .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
+                                Picker("Tunnel lifetime", selection: Binding(
+                                    get: { state.session.lifetime },
+                                    set: { state.session.lifetime = $0 }
+                                )) {
+                                    ForEach(TunnelLifetime.allCases) { option in
+                                        Text(option.title).tag(option)
+                                    }
                                 }
+                                .pickerStyle(.segmented)
                             }
 
                             Button {

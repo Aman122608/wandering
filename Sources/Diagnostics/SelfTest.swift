@@ -107,8 +107,8 @@ final class SelfTestRunner: ObservableObject {
 
             // 6. durability probe: does the fix outlive the tunnel?
             try set(5, .running)
-            if session.burstTunnel {
-                steps[5].status = .skipped("Burst mode is already on")
+            if session.lifetime == .persistent {
+                steps[5].status = .skipped("Tunnel is set to stay open — this probe needs it closed")
             } else {
                 let anchor = coordinate
                 session.disconnect()

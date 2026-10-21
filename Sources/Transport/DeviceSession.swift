@@ -1,11 +1,32 @@
 import CoreLocation
 import Foundation
 
+/// How long the developer tunnel stays open.
+enum TunnelLifetime: String, CaseIterable, Identifiable {
+    /// Open only while coordinates are being written, then close. The device keeps
+    /// the simulated location, so a parked spoof costs nothing and the VPN indicator
+    /// disappears instead of sitting in the status bar.
+    case setupOnly
+    /// Keep the tunnel for the whole session. Only needed if a device turns out to
+    /// drop the fix once the connection goes away.
+    case persistent
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .setupOnly: return "Close after setup"
+        case .persistent: return "Keep open"
+        }
+    }
+}
+
 /// The device side of the app: tunnel, developer disk image, location service.
 ///
-/// This class is deliberately small and serialised. Everything that can block is
-/// bounded, because the underlying developer call has no timeout of its own and a
-/// wedged call would freeze the whole session.
+/// The lifetime rule is the important part: opening the tunnel is the expensive,
+/// visible step, so it is opened for a movement and closed when the movement ends.
+/// It is never cycled per write — the device holds the simulated location on its own
+/// once it has accepted it.
 @MainActor
 final class DeviceSession: ObservableObject, LocationSink {
 
@@ -19,7 +40,7 @@ final class DeviceSession: ObservableObject, LocationSink {
             switch self {
             case .idle: return "Not connected"
             case .preparing(let what): return what
-            case .ready(let address): return "Ready · \(address)"
+            case .ready(let address): return "Connected · \(address)"
             case .failed(let why): return "Failed · \(why)"
             }
         }
@@ -32,46 +53,66 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var diskImageMounted = false
     @Published private(set) var lastWrite: Date?
     @Published private(set) var writeCount = 0
+    @Published private(set) var isStreaming = false
+
+    @Published var lifetime: TunnelLifetime =
+        TunnelLifetime(rawValue: UserDefaults.standard.string(forKey: "tunnel.lifetime") ?? "")
+        ?? .setupOnly {
+        didSet {
+            UserDefaults.standard.set(lifetime.rawValue, forKey: "tunnel.lifetime")
+            if lifetime == .persistent { cancelIdleClose() }
+            DiagLog.shared.note("tunnel: lifetime → \(lifetime.title)")
+        }
+    }
 
     /// The pairing file the transport will use (the selected one in PairingStore).
     var pairingFileURL: URL? { PairingStore.current }
 
-    /// How long the tunnel stays up around a write.
-    ///
-    /// `persistent` keeps it open for the whole session (most reliable).
-    /// `burst` opens it for a moment around each write and closes it again, so the
-    /// VPN indicator only flashes instead of sitting in the status bar. Whether the
-    /// device keeps the simulated fix between bursts is device- and iOS-dependent —
-    /// the supervisor watches for a snap-back and switches back to persistent if it
-    /// catches one, so burst can never leave you silently un-spoofed.
-    @Published var burstTunnel: Bool =
-        UserDefaults.standard.bool(forKey: "tunnel.burst") {
-        didSet {
-            UserDefaults.standard.set(burstTunnel, forKey: "tunnel.burst")
-            if !burstTunnel { cancelBurstClose() }
-            DiagLog.shared.note("tunnel: lifetime set to \(burstTunnel ? "burst" : "persistent")")
-        }
-    }
-
-    private var burstCloseWorkItem: DispatchWorkItem?
-
-    private func scheduleBurstClose() {
-        cancelBurstClose()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self, self.burstTunnel else { return }
-            DiagLog.shared.note("tunnel: closing (burst window elapsed)")
-            self.disconnect()
-        }
-        burstCloseWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
-    }
-
-    private func cancelBurstClose() {
-        burstCloseWorkItem?.cancel()
-        burstCloseWorkItem = nil
-    }
+    @Published private(set) var pairingEntries: [PairingStore.Entry] = []
 
     var describe: String { connection.label }
+
+    private var idleClose: DispatchWorkItem?
+    private var reconnectAttempts = 0
+
+    // MARK: - Tunnel lifetime
+
+    func beginStreaming() async {
+        isStreaming = true
+        cancelIdleClose()
+        DiagLog.shared.note("tunnel: movement started — holding the tunnel open")
+    }
+
+    func endStreaming() async {
+        isStreaming = false
+        DiagLog.shared.note("tunnel: movement ended")
+        if lifetime == .setupOnly { scheduleIdleClose() }
+    }
+
+    private func scheduleIdleClose(after delay: TimeInterval = 1.2) {
+        cancelIdleClose()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.isStreaming else { return }
+            self.closeTunnel()
+        }
+        idleClose = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private func cancelIdleClose() {
+        idleClose?.cancel()
+        idleClose = nil
+    }
+
+    /// Closes the tunnel. The spoof stays in place on the device — there is simply
+    /// nothing left to talk to until the next coordinate changes.
+    func closeTunnel() {
+        guard connection.isReady else { return }
+        cancelIdleClose()
+        Transport.shared.shutDown()
+        connection = .idle
+        DiagLog.shared.note("tunnel: closed (simulated location stays)")
+    }
 
     // MARK: - Lifecycle
 
@@ -82,6 +123,7 @@ final class DeviceSession: ObservableObject, LocationSink {
         do {
             try await Transport.shared.bringUp(session: self)
             connection = .ready(address: Transport.shared.dialedAddress ?? "tunnel")
+            reconnectAttempts = 0
             DiagLog.shared.note("connect: ready at \(Transport.shared.dialedAddress ?? "?")")
         } catch {
             connection = .failed(error.localizedDescription)
@@ -90,7 +132,8 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     func disconnect() {
-        cancelBurstClose()
+        cancelIdleClose()
+        isStreaming = false
         Transport.shared.shutDown()
         connection = .idle
         developerModeEnabled = false
@@ -111,12 +154,12 @@ final class DeviceSession: ObservableObject, LocationSink {
             try await Transport.shared.setLocation(latitude: latitude, longitude: longitude)
             writeCount += 1
             lastWrite = Date()
-            if burstTunnel { scheduleBurstClose() }
+            if lifetime == .setupOnly, !isStreaming { scheduleIdleClose() }
         } catch {
             connection = .failed(error.localizedDescription)
-            if burstTunnel {
-                // A failed burst may just be a torn-down tunnel; drop the handle so
-                // the next write rebuilds cleanly instead of reusing a dead one.
+            if lifetime == .setupOnly {
+                // A failed write may be a torn-down tunnel: drop it so the next
+                // attempt rebuilds instead of reusing a dead handle.
                 Transport.shared.shutDown()
                 connection = .idle
             }
@@ -125,9 +168,38 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     func clearLocation() async throws {
+        if !connection.isReady {
+            await connect()
+            guard connection.isReady else {
+                throw SinkError.notConnected(connection.label)
+            }
+        }
         try await Transport.shared.clearLocation()
         writeCount = 0
         lastWrite = nil
+        scheduleIdleClose(after: 0.6)
+    }
+
+    /// One burst: open, write, close. Used when the supervisor detects the fix has
+    /// been overridden — not as a heartbeat, so it cannot become reconnect churn.
+    @discardableResult
+    func reassert(_ coordinate: CLLocationCoordinate2D) async -> Bool {
+        guard reconnectAttempts < 3 else { return false }
+        reconnectAttempts += 1
+        DiagLog.shared.note("tunnel: re-assert burst \(reconnectAttempts)")
+        if !connection.isReady { await connect() }
+        guard connection.isReady else { return false }
+        do {
+            try await Transport.shared.setLocation(latitude: coordinate.latitude,
+                                                   longitude: coordinate.longitude)
+            lastWrite = Date()
+            writeCount += 1
+            if lifetime == .setupOnly { scheduleIdleClose() }
+            return true
+        } catch {
+            DiagLog.shared.log("re-assert failed: \(error.localizedDescription)")
+            return false
+        }
     }
 
     // MARK: - Status
@@ -138,8 +210,6 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     // MARK: - Pairing
-
-    @Published private(set) var pairingEntries: [PairingStore.Entry] = []
 
     func refreshPairings() {
         _ = PairingStore.adoptLooseFiles()

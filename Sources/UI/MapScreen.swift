@@ -383,8 +383,8 @@ struct MapScreen: View {
 
     private var supervisorTone: StatusChip.Tone {
         switch state.supervisor.health {
-        case .healthy: return .live
-        case .recovering: return .busy
+        case .streaming, .established: return .live
+        case .repairing: return .busy
         case .lost: return .bad
         case .idle: return .neutral
         }

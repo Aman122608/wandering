@@ -1,59 +1,69 @@
 import CoreLocation
 import Foundation
 
-/// Keeps a live session alive instead of letting it die quietly.
+/// Watches a live spoof without becoming a source of churn.
 ///
-/// Three jobs:
-/// 1. **Watchdog** — a session must produce a successful write every few seconds.
-///    If the stream stalls (device dropped, tunnel gone, service unresponsive), the
-///    supervisor tears the transport down and rebuilds it, then re-asserts the last
-///    coordinate.
-/// 2. **Snap-back detection** — compares the phone's *real* fix against the target.
-///    Two consecutive fixes hundreds of metres away mean the spoof was overridden;
-///    it re-asserts immediately and escalates to a full rebuild if that persists.
-/// 3. **Honest failure** — after three rebuild attempts it declares the session lost
-///    and stops the player, rather than leaving the UI showing a session that is not
-///    actually happening.
+/// The model that matters: the tunnel is opened to *write* a location, and once the
+/// device has accepted it the fix persists with nothing connected. So there is no
+/// heartbeat, no periodic re-assert and no reconnect loop — a parked spoof costs
+/// nothing and the VPN stays off. This class only intervenes when something is
+/// demonstrably wrong:
+///
+/// * **while moving**, writes must keep succeeding; a stall means the movement has
+///   silently stopped, so the tunnel is rebuilt;
+/// * **while parked**, the phone's own fix is compared against the target; a
+///   sustained drift means iOS dropped the simulation, so one bounded re-assert burst
+///   is sent (rate-limited, max three per session);
+/// * after three failed repairs the session is declared lost and playback stops,
+///   rather than leaving the UI claiming something that is not happening.
 @MainActor
 final class SessionSupervisor: ObservableObject {
 
     enum Health: Equatable {
         case idle
-        case healthy
-        case recovering(Int)
+        case streaming
+        case established          // parked, fix in place, tunnel closed
+        case repairing(Int)
         case lost(String)
 
         var label: String {
             switch self {
             case .idle: return "Idle"
-            case .healthy: return "Live"
-            case .recovering(let attempt): return "Recovering (\(attempt))"
+            case .streaming: return "Moving"
+            case .established: return "Spoof in place"
+            case .repairing(let attempt): return "Repairing (\(attempt))"
             case .lost(let why): return "Lost · \(why)"
             }
         }
 
-        var isHealthy: Bool { self == .healthy }
+        var isHealthy: Bool {
+            switch self {
+            case .streaming, .established: return true
+            case .idle, .repairing, .lost: return false
+            }
+        }
     }
 
     @Published private(set) var health: Health = .idle
     @Published private(set) var lastWrite: Date?
-    @Published private(set) var recoveries = 0
+    @Published private(set) var repairs = 0
     @Published private(set) var note = ""
     @Published private(set) var realFix: CLLocationCoordinate2D?
+    @Published private(set) var driftMetres: Double = 0
 
-    /// A write older than this while a session is live means something is wrong.
-    private let staleAfter: TimeInterval = 7
-    private let maxRecoveryAttempts = 3
-    private let snapBackThreshold: Double = 400   // metres
-    private let snapBackHitsBeforeReassert = 2
+    private let stallTimeout: TimeInterval = 7        // while writing
+    private let maxRepairs = 3
+    private let driftThreshold: Double = 300          // metres from target
+    private let driftHitsBeforeRepair = 2
+    private let repairCooldown: TimeInterval = 60
 
     private weak var player: TrackPlayer?
     private weak var session: DeviceSession?
     private var timer: Timer?
     private var target: CLLocationCoordinate2D?
-    private var recovering = false
-    private var failuresInARow = 0
-    private var snapBackHits = 0
+    private var repairing = false
+    private var driftHits = 0
+    private var lastRepairAt = Date.distantPast
 
     // MARK: - Wiring
 
@@ -61,18 +71,18 @@ final class SessionSupervisor: ObservableObject {
         self.player = player
         self.session = session
         player.onWriteFailure = { [weak self] error in
-            await self?.recover(reason: error.localizedDescription) ?? false
+            await self?.repair(reason: error.localizedDescription) ?? false
         }
     }
 
     func begin(target: CLLocationCoordinate2D) {
         self.target = target
-        failuresInARow = 0
-        recoveries = 0
-        snapBackHits = 0
-        health = .healthy
+        repairs = 0
+        driftHits = 0
+        lastRepairAt = .distantPast
         lastWrite = Date()
         note = ""
+        health = player?.phase == .playing ? .streaming : .established
         startWatchdog()
         Defaults.wasSpoofing = true
         Defaults.lastSessionAt = Date()
@@ -81,8 +91,7 @@ final class SessionSupervisor: ObservableObject {
 
     func recordWrite() {
         lastWrite = Date()
-        failuresInARow = 0
-        if health != .healthy, !recovering { health = .healthy }
+        if health == .streaming || health == .repairing { health = .streaming }
     }
 
     func end() {
@@ -98,98 +107,122 @@ final class SessionSupervisor: ObservableObject {
 
     private func startWatchdog() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
     }
 
     private func tick() {
-        guard let player, player.phase.isActive else { return }
-        guard !recovering else { return }
-        let since = Date().timeIntervalSince(lastWrite ?? .distantPast)
-        if since > staleAfter {
-            note = "No write for \(Int(since))s — rebuilding"
-            DiagLog.shared.note("supervisor: stale for \(Int(since))s, rebuilding")
-            Task { _ = await recover(reason: "no write for \(Int(since))s") }
+        guard let player else { return }
+
+        switch player.phase {
+        case .playing:
+            // Writing continuously: a gap means the stream died.
+            health = repairing ? health : .streaming
+            let since = Date().timeIntervalSince(lastWrite ?? .distantPast)
+            if since > stallTimeout, !repairing {
+                note = "No write for \(Int(since))s"
+                DiagLog.shared.note("supervisor: write stall \(Int(since))s, repairing")
+                Task { _ = await repair(reason: "write stall") }
+            }
+        case .holding:
+            // Parked: nothing should be connected. Only watch for drift.
+            if !repairing { health = .established }
+            checkDrift()
+        case .paused:
+            if !repairing { health = .established }
+        default:
+            break
         }
     }
 
-    // MARK: - Recovery
+    private func checkDrift() {
+        guard let target else { return }
+        guard let fix = realFix else { return }
+        driftMetres = Geo.distance(fix, target)
+        if driftMetres > driftThreshold {
+            driftHits += 1
+            note = "Real fix \(Int(driftMetres)) m away"
+        } else {
+            driftHits = 0
+            if note.hasPrefix("Real fix") { note = "" }
+        }
+        guard driftHits >= driftHitsBeforeRepair else { return }
+        guard Date().timeIntervalSince(lastRepairAt) > repairCooldown else { return }
+        driftHits = 0
+        lastRepairAt = Date()
+        DiagLog.shared.note("supervisor: fix drifted \(Int(driftMetres))m, one re-assert burst")
+        Task { await reassertOnce() }
+    }
 
-    /// Returns true when the transport is usable again.
+    // MARK: - Repair
+
+    private func reassertOnce() async {
+        guard let session, let target, !repairing else { return }
+        repairing = true
+        health = .repairing(repairs + 1)
+        note = "Re-asserting after drift"
+        let ok = await session.reassert(target)
+        repairs += 1
+        repairing = false
+        if ok {
+            health = .established
+            note = "Re-asserted"
+            lastWrite = Date()
+        } else {
+            failIfExhausted(reason: "re-assert failed")
+        }
+    }
+
+    /// Full rebuild — only used while a movement is streaming, where a dead tunnel
+    /// means the movement itself is dead.
     @discardableResult
-    func recover(reason: String) async -> Bool {
-        guard !recovering else { return false }
-        guard let session, let player, player.phase.isActive else { return false }
+    func repair(reason: String) async -> Bool {
+        guard !repairing, let session, let player else { return false }
+        guard player.phase == .playing else { return false }
+        repairing = true
+        defer { repairing = false }
 
-        recovering = true
-        defer { recovering = false }
-        recoveries += 1
-        health = .recovering(recoveries)
+        repairs += 1
+        health = .repairing(repairs)
         note = "Rebuilding: \(reason)"
-        DiagLog.shared.note("supervisor: rebuild #\(recoveries) — \(reason)")
+        DiagLog.shared.note("supervisor: rebuild #\(repairs) — \(reason)")
 
         session.disconnect()
-        try? await Task.sleep(nanoseconds: 600_000_000)
-
+        try? await Task.sleep(nanoseconds: 500_000_000)
         await session.connect()
-        guard session.connection.isReady else {
-            if recoveries >= maxRecoveryAttempts {
-                health = .lost("tunnel did not come back")
-                note = "Gave up after \(recoveries) attempts. Reconnect LocalDevVPN and start again."
-                DiagLog.shared.note("supervisor: lost — tunnel did not come back")
-                player.stop(clear: false)
-                Defaults.wasSpoofing = false
-            }
+        guard session.connection.isReady, let target else {
+            failIfExhausted(reason: reason)
             return false
         }
-
-        // Re-assert immediately: a rebuilt tunnel starts with no location set.
-        if let target {
-            do {
-                try await session.setLocation(latitude: target.latitude,
-                                              longitude: target.longitude)
-                lastWrite = Date()
-            } catch {
-                DiagLog.shared.note("supervisor: re-assert failed — \(error.localizedDescription)")
-                return false
-            }
+        do {
+            try await session.setLocation(latitude: target.latitude,
+                                          longitude: target.longitude)
+            lastWrite = Date()
+            health = .streaming
+            note = "Rebuilt"
+            return true
+        } catch {
+            failIfExhausted(reason: error.localizedDescription)
+            return false
         }
-        player.reassert()
-        recoveries = 0
-        health = .healthy
-        note = "Rebuilt"
-        DiagLog.shared.note("supervisor: rebuilt and re-asserted")
-        return true
     }
 
-    // MARK: - Snap-back
+    private func failIfExhausted(reason: String) {
+        guard repairs >= maxRepairs else { return }
+        health = .lost("gave up after \(repairs) repairs")
+        note = "Reconnect LocalDevVPN and start again."
+        DiagLog.shared.note("supervisor: lost — \(reason)")
+        player?.stop(clear: false)
+        Defaults.wasSpoofing = false
+    }
+
+    // MARK: - Real fixes
 
     /// Called with the phone's own location fixes while a session is live.
     func observeRealFix(_ coordinate: CLLocationCoordinate2D) {
         realFix = coordinate
-        guard let player, player.phase.isActive, let target else { return }
-        let drift = Geo.distance(coordinate, target)
-        if drift > snapBackThreshold {
-            snapBackHits += 1
-        } else {
-            snapBackHits = 0
-        }
-        guard snapBackHits >= snapBackHitsBeforeReassert else { return }
-        snapBackHits = 0
-        if session?.burstTunnel == true {
-            // Burst mode means the tunnel is closed most of the time; if the device
-            // is dropping the fix between writes, that trade is not worth it.
-            session?.burstTunnel = false
-            note = "Burst tunnel cannot hold the fix — switched to persistent"
-            DiagLog.shared.note("supervisor: burst tunnel dropped the fix, "
-                + "falling back to persistent")
-            Task { _ = await recover(reason: "burst tunnel lost the fix") }
-            return
-        }
-        note = "Real fix \(Int(drift)) m from target — re-asserting"
-        DiagLog.shared.note("supervisor: snap-back \(Int(drift))m, re-asserting")
-        player.reassert()
-        lastWrite = Date()
+        guard let target else { return }
+        driftMetres = Geo.distance(coordinate, target)
     }
 }

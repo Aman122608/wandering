@@ -79,6 +79,7 @@ final class TrackPlayer: ObservableObject {
         let start = Date()
         task = Task { [weak self] in
             guard let self else { return }
+            await sink.beginStreaming()
             var failures = 0
             var previous = samples.first?.coordinate
             var index = 0
@@ -145,30 +146,23 @@ final class TrackPlayer: ObservableObject {
             DiagLog.shared.note("track finished: \(samples.count) writes in "
                 + String(format: "%.1f", elapsed) + "s")
 
+            await sink.endStreaming()
+
             guard holdAtEnd, let anchor = samples.last?.coordinate,
                   !self.stopFlag else {
                 self.phase = .idle
                 return
             }
+            // Parked. No re-sends: the device keeps a simulated location until it is
+            // cleared or the device reboots, so the tunnel can stay closed here. The
+            // supervisor watches the phone's own fix and re-asserts only if it drifts.
             self.phase = .holding
-            var tick = 0
+            self.current = anchor
+            DiagLog.shared.note("track finished: parked at "
+                + String(format: "%.5f", anchor.latitude) + ", "
+                + String(format: "%.5f", anchor.longitude))
             while !self.stopFlag && !Task.isCancelled {
-                if self.pauseFlag {
-                    await self.slice(0.2)
-                    continue
-                }
-                let drift = TrackBuilder.breathingHold(anchor: anchor, minutes: 4.0 / 60,
-                                                       tick: 4, radius: 2.0)
-                if let s = drift.first {
-                    try? await sink.setLocation(latitude: s.coordinate.latitude,
-                                                longitude: s.coordinate.longitude)
-                    self.current = s.coordinate
-                }
-                tick += 1
-                if tick % 15 == 0 {
-                    DiagLog.shared.note("hold alive (\(tick * 4)s)")
-                }
-                await self.slice(4)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -213,6 +207,7 @@ final class TrackPlayer: ObservableObject {
         pauseFlag = false
         let sink = self.sink
         self.sink = nil
+        if let sink, clear { Task { await sink.endStreaming() } }
         phase = .idle
         progress = 0
         speedKmh = 0
