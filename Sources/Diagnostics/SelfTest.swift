@@ -91,11 +91,10 @@ final class SelfTestRunner: ObservableObject {
             // The disk image only gates services that need it (process control,
             // screenshots). Location simulation runs off the RSD/DVT session that is
             // already open, so a failed mount is reported but not fatal.
-            if session.diskImageMounted {
-                steps[3].status = .passed
-            } else {
-                steps[3].status = .passed
-                steps[3].detail = "image not mounted — location writes do not need it"
+            steps[3].status = .passed
+            if !session.diskImageMounted {
+                DiagLog.shared.log("self-test: image not mounted, location writes do not "
+                                   + "need it — continuing")
             }
 
             // 5. write
