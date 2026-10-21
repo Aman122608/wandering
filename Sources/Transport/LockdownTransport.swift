@@ -36,8 +36,11 @@ final class LockdownTransport {
     }
 
     func setLocation(latitude: Double, longitude: Double) async throws {
-        guard isReady || await prepare().hasPrefix("service ready") else {
-            throw SinkError.deviceRefused(status)
+        if !isReady {
+            let prepared = await prepare()
+            guard prepared.hasPrefix("service ready") else {
+                throw SinkError.deviceRefused(status)
+            }
         }
         let (ok, port, message) = await run { ip in
             var servicePort: UInt16 = 0
