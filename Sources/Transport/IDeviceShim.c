@@ -301,6 +301,15 @@ int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len) {
     long connect_ms = (stamp_now.tv_sec - stamp_start.tv_sec) * 1000
                     + (stamp_now.tv_usec - stamp_start.tv_usec) / 1000;
 
+    // Which address did we leave from? If it is not the tunnel subnet, the packet went
+    // out over Wi-Fi and nothing on the device could have answered.
+    char local[32] = "?";
+    struct sockaddr_in bound;
+    socklen_t bound_len = sizeof(bound);
+    if (getsockname(fd, (struct sockaddr *)&bound, &bound_len) == 0) {
+        inet_ntop(AF_INET, &bound.sin_addr, local, sizeof(local));
+    }
+
     // Say nothing. Whatever the peer does now is its own decision.
     fd_set rfds;
     FD_ZERO(&rfds);
@@ -313,23 +322,23 @@ int wd_probe_tunnel(const char *ip, uint16_t port, char *out, size_t out_len) {
 
     if (ready == 0) {
         snprintf(out, out_len,
-                 "connected in %ld ms, peer stayed silent for %ld ms — it waits for us",
-                 connect_ms, quiet_ms);
+                 "connected in %ld ms from %s, peer stayed silent for %ld ms — it waits for us",
+                 connect_ms, local, quiet_ms);
     } else if (ready > 0) {
         unsigned char buf[32];
         ssize_t got = recv(fd, buf, sizeof(buf), 0);
         if (got == 0) {
             snprintf(out, out_len,
-                     "connected in %ld ms, peer closed after %ld ms without being spoken to "
-                     "(tunnel or service mismatch)", connect_ms, quiet_ms);
+                     "connected in %ld ms from %s, peer closed after %ld ms without being "
+                     "spoken to (nothing listening there)", connect_ms, local, quiet_ms);
         } else if (got > 0) {
             char hex[3 * 32 + 1];
             hex[0] = 0;
             for (ssize_t i = 0; i < got && i < 16; i++) {
                 snprintf(hex + strlen(hex), sizeof(hex) - strlen(hex), "%02x ", buf[i]);
             }
-            snprintf(out, out_len, "connected in %ld ms, peer sent %zd bytes immediately: %s",
-                     connect_ms, got, hex);
+            snprintf(out, out_len, "connected in %ld ms from %s, peer sent %zd bytes: %s",
+                     connect_ms, local, got, hex);
         } else {
             snprintf(out, out_len, "connected in %ld ms, probe read failed: %s",
                      connect_ms, strerror(errno));

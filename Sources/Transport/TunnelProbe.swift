@@ -30,34 +30,46 @@ enum TunnelProbe {
             out.append(TunnelEndpoint(address: address, port: developerPort, origin: origin))
         }
 
-        // 1. Tun interfaces, current subnets first.
+        // Wander dials the *fake client* address and lets the provider swap src/dst, so
+        // that remotepairingd sees a connection from inside its own subnet. The utun peer
+        // is what looks obvious and is what kept failing: nothing listens there.
+        add("10.7.0.1", "LocalDevVPN swap target")
+
+        // Then whatever the utun actually advertises, in case the subnet is configured
+        // differently, then the historical literals.
         for interface in tunnelInterfaces() {
             for address in derivedPeers(for: interface) {
                 add(address, "utun \(interface.name)")
             }
         }
-
-        // 2. Historical literals: LocalDevVPN's pair first (it is what is installed),
-        //    loopback last — it is a diagnostic control, usually refused.
-        add("10.7.0.1", "LocalDevVPN target")
-        add("10.7.0.0", "LocalDevVPN device")
-        add("10.7.0.2", "LocalDevVPN sibling")
+        add("10.7.0.0", "device candidate")
+        add("10.7.0.2", "sibling candidate")
         add("172.20.10.1", "personal hotspot")
         add("127.0.0.1", "loopback control")
         return out
     }
 
-    /// Returns the first endpoint that accepts a TCP connection, or nil.
     static func discover(logger: ((String) -> Void)? = nil) -> TunnelEndpoint? {
+        var fallback: TunnelEndpoint?
+
         for candidate in candidates() {
-            if canConnect(candidate, timeout: connectTimeout) {
-                logger?("tunnel: \(candidate.address):\(candidate.port) reachable "
-                        + "(\(candidate.origin))")
+            var buffer = [CChar](repeating: 0, count: 256)
+            let status = candidate.address.withCString {
+                wd_probe_tunnel($0, candidate.port, &buffer, 256)
+            }
+            let report = String(cString: buffer)
+            logger?("probe \(candidate.address):\(candidate.port) (\(candidate.origin)) — "
+                    + (status == 0 ? report : "failed: \(report)"))
+
+            // Only an address that keeps the socket open has a service behind it.
+            if report.contains("waits for us") {
                 return candidate
             }
+            if fallback == nil, report.contains("connected in") {
+                fallback = candidate
+            }
         }
-        logger?("tunnel: no endpoint answered on port \(developerPort)")
-        return nil
+        return fallback
     }
 
     // MARK: - Sockets
