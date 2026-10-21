@@ -37,13 +37,13 @@ enum TunnelProbe {
             }
         }
 
-        // 2. Historical literals. Loopback first: remotepairingd answers on
-        //    127.0.0.1:49152 on current iOS, and it needs no tunnel at all.
-        add("127.0.0.1", "loopback")
+        // 2. Historical literals: LocalDevVPN's pair first (it is what is installed),
+        //    loopback last — it is a diagnostic control, usually refused.
         add("10.7.0.1", "LocalDevVPN target")
         add("10.7.0.0", "LocalDevVPN device")
         add("10.7.0.2", "LocalDevVPN sibling")
         add("172.20.10.1", "personal hotspot")
+        add("127.0.0.1", "loopback control")
         return out
     }
 

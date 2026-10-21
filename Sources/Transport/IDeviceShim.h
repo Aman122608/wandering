@@ -49,6 +49,12 @@ int wd_mount_personalized(WanderingDevice *dev,
                           const uint8_t *build_manifest, size_t build_manifest_len,
                           uint64_t chip_id, char *err, size_t err_len);
 
+/// Persist the pairing file after a successful connect. The first tunnel can add
+/// `alt_irk` to it in place; without writing it back the next launch re-runs
+/// pair-setup and the device prompts again.
+int wd_persist_pairing_file(WanderingDevice *dev, const char *path,
+                            char *err, size_t err_len);
+
 /// Set / clear the simulated location.
 int wd_set_location(WanderingDevice *dev, double latitude, double longitude,
                     char *err, size_t err_len);

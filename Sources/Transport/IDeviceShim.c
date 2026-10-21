@@ -45,6 +45,12 @@ static int wd_fail(struct IdeviceFfiError *err, char *buf, size_t len, const cha
     return -1;
 }
 
+static void wd_progress_noop(size_t done, size_t total, void *context) {
+    (void)done;
+    (void)total;
+    (void)context;
+}
+
 static void wd_note(char *buf, size_t len, const char *message) {
     if (buf != NULL && len > 0) {
         snprintf(buf, len, "%s", message);
@@ -152,6 +158,16 @@ int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
 
     dev->connected = 1;
     return 0;
+}
+
+int wd_persist_pairing_file(WanderingDevice *dev, const char *path,
+                            char *err, size_t err_len) {
+    if (dev == NULL || dev->pairing == NULL || path == NULL) {
+        wd_note(err, err_len, "no pairing file to persist");
+        return -1;
+    }
+    struct IdeviceFfiError *e = rp_pairing_file_write(dev->pairing, path);
+    return wd_fail(e, err, err_len, "persist pairing file");
 }
 
 // MARK: - developer services
@@ -277,7 +293,13 @@ int wd_mount_personalized(WanderingDevice *dev,
         dev->mounter, dev->adapter, dev->handshake,
         image, image_len, trust_cache, trust_cache_len,
         build_manifest, build_manifest_len,
-        NULL, chip_id, NULL, NULL);
+        NULL, chip_id, wd_progress_noop, NULL);
+    if (e != NULL) {
+        // The mounter reconnects its own socket mid-mount; a failure can leave it
+        // closed, so drop it and let the next attempt build a fresh one.
+        image_mounter_free(dev->mounter);
+        dev->mounter = NULL;
+    }
     return wd_fail(e, err, err_len, "mount personalised disk image");
 }
 

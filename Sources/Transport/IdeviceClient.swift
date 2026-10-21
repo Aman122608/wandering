@@ -24,7 +24,7 @@ actor IdeviceClient {
 
     func connect(endpoint: TunnelEndpoint, pairingFile: URL) async throws {
         if connected { return }
-        let handle = try await onQueue { () -> OpaquePointer in
+        let handle = try await onQueue(timeout: 25) { () -> OpaquePointer in
             guard let handle = wd_create() else {
                 throw SinkError.internalFailure("could not allocate device handle")
             }
@@ -39,6 +39,21 @@ actor IdeviceClient {
         }
         device = handle
         connected = true
+
+        // The first connect can add `alt_irk` to the pairing file in place. Write it
+        // back, otherwise the next launch re-runs pair-setup and the device asks for
+        // consent again.
+        do {
+            try await onQueue(timeout: 8) {
+                var err = [CChar](repeating: 0, count: 512)
+                let status = wd_persist_pairing_file(handle, pairingFile.path, &err, err.count)
+                guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
+            }
+            DiagLog.shared.log("ffi: pairing file persisted")
+        } catch {
+            DiagLog.shared.log("ffi: could not persist pairing file — \(error.localizedDescription)")
+        }
+
         DiagLog.shared.log("ffi: tunnel open to \(endpoint.address):\(endpoint.port)")
     }
 
@@ -47,7 +62,7 @@ actor IdeviceClient {
             throw SinkError.notConnected("tunnel not open")
         }
 
-        let version: String = try await onQueue { () -> String in
+        let version: String = try await onQueue(timeout: 10) { () -> String in
             var out = [CChar](repeating: 0, count: 64)
             var err = [CChar](repeating: 0, count: 512)
             let status = wd_product_version(device, &out, out.count, &err, err.count)
@@ -56,7 +71,7 @@ actor IdeviceClient {
         }
 
         var enabled: Int32 = 0
-        try await onQueue {
+        try await onQueue(timeout: 10) {
             var err = [CChar](repeating: 0, count: 512)
             let status = wd_developer_mode(device, &enabled, &err, err.count)
             guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
@@ -72,7 +87,7 @@ actor IdeviceClient {
             let assets = try await DeveloperDiskImage.assets(for: version) { name, fraction in
                 DiagLog.shared.log("ddi: \(name) \(Int(fraction * 100))%")
             }
-            let chipID: UInt64 = try await onQueue {
+            let chipID: UInt64 = try await onQueue(timeout: 10) {
                 var value: UInt64 = 0
                 var err = [CChar](repeating: 0, count: 512)
                 let status = wd_unique_chip_id(device, &value, &err, err.count)
@@ -81,7 +96,7 @@ actor IdeviceClient {
             }
             DiagLog.shared.log("ffi: UniqueChipID \(chipID)")
 
-            try await onQueue {
+            try await onQueue(timeout: 90) {
                 var err = [CChar](repeating: 0, count: 512)
                 let status = assets.image.withUnsafeBytes { imageBuffer in
                     assets.trustCache.withUnsafeBytes { trustBuffer in
@@ -114,7 +129,19 @@ actor IdeviceClient {
 
     func setLocation(latitude: Double, longitude: Double) async throws {
         guard let device, connected else { throw SinkError.notConnected("tunnel not open") }
-        try await onQueue {
+        do {
+            try await write(device: device, latitude: latitude, longitude: longitude)
+        } catch {
+            if case SinkError.timedOut = error {
+                connected = false
+                mounted = false
+            }
+            throw error
+        }
+    }
+
+    private func write(device: OpaquePointer, latitude: Double, longitude: Double) async throws {
+        try await onQueue(timeout: 6) {
             var err = [CChar](repeating: 0, count: 512)
             let status = wd_set_location(device, latitude, longitude, &err, err.count)
             guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
@@ -123,7 +150,7 @@ actor IdeviceClient {
 
     func clearLocation() async throws {
         guard let device, connected else { return }
-        try await onQueue {
+        try await onQueue(timeout: 6) {
             var err = [CChar](repeating: 0, count: 512)
             let status = wd_clear_location(device, &err, err.count)
             guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
@@ -140,15 +167,39 @@ actor IdeviceClient {
 
     // MARK: - Plumbing
 
-    private func onQueue<T>(_ body: @escaping () throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    continuation.resume(returning: try body())
-                } catch {
-                    continuation.resume(throwing: error)
+    /// Runs one blocking FFI call on the serial queue.
+    ///
+    /// `timeout` matters: the FFI wraps only TCP connect in a timeout, so a device
+    /// that drops off mid-call blocks `set`/`clear`/mount forever. When the bound is
+    /// hit the tunnel is marked dead — the abandoned call cannot be interrupted, but
+    /// the session can be rebuilt around it.
+    private func onQueue<T>(timeout: TimeInterval? = nil,
+                            _ body: @escaping () throws -> T) async throws -> T {
+        let work = { () async throws -> T in
+            try await withCheckedThrowingContinuation { continuation in
+                self.queue.async {
+                    do {
+                        continuation.resume(returning: try body())
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        }
+
+        guard let timeout else { return try await work() }
+
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw SinkError.timedOut("device call exceeded \(Int(timeout))s")
+            }
+            guard let first = try await group.next() else {
+                throw SinkError.internalFailure("no result from device call")
+            }
+            group.cancelAll()
+            return first
         }
     }
 

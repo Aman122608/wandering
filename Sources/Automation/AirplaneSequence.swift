@@ -4,17 +4,16 @@ import Network
 import UIKit
 
 /// Starts a session without Wi-Fi, the way the paid apps do it: airplane mode on,
-/// tunnel already up, teleport, airplane mode off.
+/// tunnel already up, set the location, airplane mode off.
 ///
 /// Why this exists: with the radios off there is no network path for iOS to
-/// re-resolve location from, so the first fix after the sequence comes from the
-/// simulated location instead of a cached network fix. Shortcuts is the only way
-/// to flip Airplane Mode — iOS exposes no API for it — so the app drives two
-/// user-created Shortcuts and verifies each step itself.
+/// re-resolve a location from, so the first fix after the sequence comes from the
+/// simulated location instead of a cached Wi-Fi fix.
 ///
-/// The tunnel here belongs to LocalDevVPN, which we cannot start (it is another
-/// app's configuration), so the sequence asks you to connect it once and then
-/// waits for it rather than pretending to do it.
+/// Shortcuts is the only way to flip Airplane Mode (iOS exposes no API), so the app
+/// drives a Shortcut and verifies the outcome itself instead of trusting it. The
+/// tunnel belongs to LocalDevVPN, which we cannot start, so the sequence waits for
+/// it rather than pretending to.
 @MainActor
 final class AirplaneSequence: ObservableObject {
 
@@ -54,6 +53,8 @@ final class AirplaneSequence: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var detail = ""
     @Published private(set) var networkAvailable = true
+    @Published private(set) var hasWiFi = false
+    @Published private(set) var onCellular = false
 
     private let monitor = NWPathMonitor()
     private var monitorStarted = false
@@ -62,6 +63,8 @@ final class AirplaneSequence: ObservableObject {
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
                 self?.networkAvailable = path.status == .satisfied
+                self?.hasWiFi = path.usesInterfaceType(.wifi)
+                self?.onCellular = path.usesInterfaceType(.cellular)
             }
         }
         monitor.start(queue: DispatchQueue(label: "com.aman.wandering.path"))
@@ -72,7 +75,7 @@ final class AirplaneSequence: ObservableObject {
         if monitorStarted { monitor.cancel() }
     }
 
-    /// `move` is what actually injects — a teleport or a route start.
+    /// `move` performs the injection (teleport or route start).
     func run(target: CLLocationCoordinate2D?,
              shortcutOn: String,
              shortcutOff: String,
@@ -82,7 +85,7 @@ final class AirplaneSequence: ObservableObject {
 
         do {
             phase = .waitingForTunnel
-            detail = "Connecting the tunnel first — it must be up before the radios go off."
+            detail = "Connecting the tunnel first — it has to be up before the radios go off."
             do {
                 try await connect()
             } catch {
@@ -90,18 +93,30 @@ final class AirplaneSequence: ObservableObject {
                     "Connect LocalDevVPN, then retry: \(error.localizedDescription)")
             }
 
+            // With Wi-Fi up there is nothing to gain from dropping the radios, and a
+            // cycle would only risk the tunnel. Straight to work.
+            if hasWiFi {
+                detail = "Wi-Fi is up — skipping the Airplane Mode cycle."
+                DiagLog.shared.note("airplane: skipped (Wi-Fi present)")
+                phase = .moving
+                await move()
+                phase = .finished
+                detail = "Done (no radio cycle was needed)."
+                return
+            }
+
             phase = .airplaneOn
             detail = "Running “\(shortcutOn)”."
-            openShortcut(named: shortcutOn)
-            let wentOffline = await waitForNetwork(false, timeout: 25)
+            openShortcut(named: shortcutOn, input: "on")
+            let wentOffline = await waitForRadiosOff(timeout: 25)
             if !wentOffline {
-                detail = "Airplane Mode did not engage — continuing anyway."
+                detail = "Airplane Mode did not engage — trying the tunnel anyway."
+                DiagLog.shared.note("airplane: radios still up after 25s")
             }
 
             phase = .waitingForTunnel
             detail = "Checking the tunnel still answers with the radios off."
-            let tunnelAlive = await waitForTunnel(timeout: 20)
-            guard tunnelAlive else {
+            guard await waitForTunnel(timeout: 20) else {
                 throw SequenceError.message(
                     "The tunnel stopped answering once the radios went off. "
                     + "Reconnect LocalDevVPN and try again.")
@@ -113,11 +128,11 @@ final class AirplaneSequence: ObservableObject {
 
             phase = .airplaneOff
             detail = "Running “\(shortcutOff)”."
-            openShortcut(named: shortcutOff)
+            openShortcut(named: shortcutOff, input: "off")
 
             phase = .restoring
-            detail = "Waiting for a radio to come back (up to 25 s)."
-            let back = await waitForNetwork(true, timeout: 25)
+            detail = "Waiting for a radio to come back (up to 25 s — modem re-attach is slow)."
+            let back = await waitForNetwork(timeout: 25)
             phase = .finished
             detail = back
                 ? "Radios are back. Session is live."
@@ -125,14 +140,13 @@ final class AirplaneSequence: ObservableObject {
         } catch let error as SequenceError {
             phase = .failed(error.message)
             detail = error.message
-            DiagLog.shared.note("airplane sequence failed: \(error.message)")
-            // Always try to restore the radios, even on failure.
-            openShortcut(named: shortcutOff)
+            DiagLog.shared.note("airplane: failed — \(error.message)")
+            openShortcut(named: shortcutOff, input: "off")
         } catch {
             phase = .failed(error.localizedDescription)
-            openShortcut(named: shortcutOff)
+            openShortcut(named: shortcutOff, input: "off")
         }
-        DiagLog.shared.note("airplane sequence: \(phase.label)")
+        DiagLog.shared.note("airplane: \(phase.label)")
     }
 
     func reset() {
@@ -151,20 +165,35 @@ final class AirplaneSequence: ObservableObject {
         }
     }
 
-    private func openShortcut(named name: String) {
+    /// Runs the shortcut through Shortcuts' x-callback scheme. The callback is not
+    /// required for the sequence to work — the radios themselves are the evidence —
+    /// but it makes the Shortcut able to report back later.
+    private func openShortcut(named name: String, input: String) {
         guard !name.isEmpty,
               let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "shortcuts://run-shortcut?name=\(encoded)") else { return }
+              let url = URL(string: "shortcuts://x-callback-url/run-shortcut"
+                            + "?name=\(encoded)&input=text&text=\(input)"
+                            + "&x-success=wandering://airplane-ok"
+                            + "&x-error=wandering://airplane-missing") else { return }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 
-    private func waitForNetwork(_ wantAvailable: Bool, timeout: TimeInterval) async -> Bool {
+    private func waitForNetwork(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if networkAvailable == wantAvailable { return true }
+            if networkAvailable { return true }
             try? await Task.sleep(nanoseconds: 400_000_000)
         }
-        return networkAvailable == wantAvailable
+        return networkAvailable
+    }
+
+    private func waitForRadiosOff(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !hasWiFi && !onCellular { return true }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        return !hasWiFi && !onCellular
     }
 
     private func waitForTunnel(timeout: TimeInterval) async -> Bool {
