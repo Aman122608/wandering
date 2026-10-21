@@ -188,9 +188,17 @@ final class AppState: ObservableObject {
     /// Starting anything goes through here: with no Wi-Fi the cellular sequence is
     /// needed, and that is worth one confirmation before the radios drop.
     private func gate(_ action: @escaping () -> Void) {
+        // A tunnel that is already open is all a write needs. Wi-Fi is irrelevant once the
+        // connection exists, so there is nothing to toggle and nothing to ask about — this
+        // is the difference between "cellular mode once" and "airplane mode forever".
+        if session.connection.isReady {
+            action()
+            return
+        }
+
         let wantsCellular = UserDefaults.standard.bool(forKey: "airplaneInit")
         if wantsCellular && !network.isOnWiFi && !airplane.phase.isRunning {
-            DiagLog.shared.note("start: no Wi-Fi — asking before cellular mode "
+            DiagLog.shared.note("start: no tunnel and no Wi-Fi — asking before cellular mode "
                                 + "(online: \(network.isOnline))")
             consentPending = action
             cellularConsentNeeded = true
@@ -268,9 +276,19 @@ final class AppState: ObservableObject {
             variation: variation,
             pauses: pauses
         )
+
+        // Everything a route needs is computed here, in memory. Playback then needs no
+        // network at all, which is what lets a drive run with the radios in any state.
         let samples = TrackBuilder.build(route: route, options: options)
         DiagLog.shared.note("play \(preset.title) · \(samples.count) samples · "
             + String(format: "%.1f km/h cap", maxSpeedKmh))
+
+        guard !samples.isEmpty else { return }
+        play(samples: samples)
+    }
+
+    /// Starts playback of a fully prepared track and arms the supervisor.
+    private func play(samples: [TrackSample]) {
         player.play(samples: samples, sink: session, rate: playbackRate)
         if let first = samples.first?.coordinate {
             supervisor.begin(target: first)
