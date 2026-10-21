@@ -14,11 +14,12 @@ final class PinBroker: ObservableObject {
 
     private init() {}
 
+    /// rppairing pair-setup uses a fixed code (000000) rather than one the device
+    /// displays, so answering automatically is correct and avoids blocking the
+    /// handshake for three minutes behind a sheet nobody needs to fill in.
     nonisolated static func request() {
-        Task { @MainActor in
-            shared.isWaiting = true
-            DiagLog.shared.note("pairing: device is asking for the 6-digit code")
-        }
+        DiagLog.shared.note("pairing: pair-setup is asking for the code — answering 000000")
+        "000000".withCString { _ = wd_submit_pin($0) }
     }
 
     func submit(_ pin: String) {

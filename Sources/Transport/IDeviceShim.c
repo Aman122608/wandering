@@ -250,6 +250,33 @@ int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
     return 0;
 }
 
+/// Creates a brand-new RP pairing file (fresh Ed25519 keys, no pairing yet).
+///
+/// Why: a file whose keys were never confirmed by this device fails pair-verify, and
+/// remotepairingd answers that with a reset rather than a prompt. Generating our own
+/// forces the pair-setup half of the handshake, which is the only way to get a record
+/// the device actually accepts.
+int wd_generate_pairing_file(const char *path, char *err, size_t err_len) {
+    if (path == NULL) {
+        wd_note(err, err_len, "invalid arguments");
+        return -1;
+    }
+    struct RpPairingFileHandle *pairing = NULL;
+    struct IdeviceFfiError *e = rp_pairing_file_generate("Wandering", &pairing);
+    if (wd_fail(e, err, err_len, "generate pairing file") != 0 || pairing == NULL) {
+        if (e == NULL) {
+            wd_note(err, err_len, "generator returned no file");
+        }
+        return -1;
+    }
+    e = rp_pairing_file_write(pairing, path);
+    rp_pairing_file_free(pairing);
+    if (wd_fail(e, err, err_len, "write generated pairing file") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int wd_persist_pairing_file(WanderingDevice *dev, const char *path,
                             char *err, size_t err_len) {
     if (dev == NULL || dev->pairing == NULL || path == NULL) {

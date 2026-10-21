@@ -156,6 +156,34 @@ enum PairingStore {
         }
     }
 
+    /// Creates a fresh pairing record with new keys and makes it active.
+    ///
+    /// A record that was never confirmed by *this* device cannot pass pair-verify, and
+    /// the device answers that with a reset instead of a prompt. Generating our own
+    /// forces pair-setup, which is what produces an accepted record.
+    @discardableResult
+    static func generateFresh() throws -> Entry {
+        guard let directory else {
+            throw SinkError.internalFailure("no application support directory")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(uniqueName(for: "Pairing-fresh.plist"))
+
+        var message = [CChar](repeating: 0, count: 256)
+        let status = destination.path.withCString { path in
+            wd_generate_pairing_file(path, &message, 256)
+        }
+        guard status == 0 else {
+            throw SinkError.internalFailure(String(cString: message))
+        }
+        guard let entry = entry(for: destination) else {
+            throw SinkError.internalFailure("generated file could not be read back")
+        }
+        setActive(entry)
+        DiagLog.shared.log("pairing: generated fresh record \(entry.name) (\(entry.size) bytes)")
+        return entry
+    }
+
     /// Picks up pairing files that were dropped into Documents through the Files app.
     @discardableResult
     static func adoptLooseFiles() -> [Entry] {

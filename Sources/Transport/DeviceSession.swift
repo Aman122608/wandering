@@ -247,6 +247,23 @@ final class DeviceSession: ObservableObject, LocationSink {
         }
     }
 
+    /// Replaces the active pairing record with a newly generated one and connects,
+    /// which makes the handshake run pair-setup instead of a doomed pair-verify.
+    func pairFromScratch() async {
+        do {
+            _ = try PairingStore.generateFresh()
+            pairingEntries = PairingStore.all()
+            importError = nil
+            DiagLog.shared.note("pairing: fresh record active — pairing now")
+        } catch {
+            importError = error.localizedDescription
+            DiagLog.shared.log("pairing: could not generate a fresh record — "
+                               + error.localizedDescription)
+            return
+        }
+        await connect()
+    }
+
     func selectPairing(_ entry: PairingStore.Entry) {
         PairingStore.setActive(entry)
         pairingEntries = PairingStore.all()

@@ -45,6 +45,9 @@ int wd_submit_pin(const char *pin);
 /// Abandon a waiting PIN request.
 void wd_cancel_pin(void);
 
+/// Writes a fresh RP pairing file (new keys, never paired) to `path`.
+int wd_generate_pairing_file(const char *path, char *err, size_t err_len);
+
 /// True while a handshake is blocked waiting for a PIN.
 int wd_pin_pending(void);
 

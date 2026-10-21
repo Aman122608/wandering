@@ -251,6 +251,17 @@ struct SettingsScreen: View {
                                 Label("Connect to the tunnel", systemImage: "antenna.radiowaves.left.and.right")
                                     .font(Tokens.body(15))
                             }
+                            Button {
+                                Task { await state.session.pairFromScratch() }
+                            } label: {
+                                Label("Pair from scratch", systemImage: "key.horizontal")
+                                    .font(Tokens.body(15))
+                            }
+                            Text("Discards the current pairing record, makes a new one and "
+                                 + "pairs with this iPhone. Use it when connecting resets "
+                                 + "the connection immediately.")
+                                .font(Tokens.caption)
+                                .foregroundStyle(Tokens.inkSecondary)
                             Button(role: .destructive) {
                                 state.stop(clear: true)
                             } label: {
