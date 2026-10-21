@@ -49,7 +49,7 @@ final class SelfTestRunner: ObservableObject {
             Step(title: "Pairing file imported"),
             Step(title: "Device tunnel reachable"),
             Step(title: "Remote pairing accepted (RSD)"),
-            Step(title: "Developer Mode on · disk image mounted"),
+            Step(title: "Developer Mode on (image optional)"),
             Step(title: "Location write accepted"),
             Step(title: "Fix survives a closed tunnel"),
             Step(title: "Clear accepted (real GPS back)"),
@@ -110,37 +110,45 @@ final class SelfTestRunner: ObservableObject {
             }
 
             // 6. durability probe: does the fix outlive the tunnel?
+            //
+            // This runs unconditionally. Skipping it whenever the tunnel happened to be
+            // configured persistent is how it silently reported success without testing
+            // anything, so the probe imposes the setting it needs and restores it after.
             try set(5, .running)
-            if session.lifetime == .persistent {
-                steps[5].status = .skipped("Tunnel is set to stay open — this probe needs it closed")
-            } else {
-                let anchor = coordinate
-                session.disconnect()
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
-                let (fix, when) = fixProbe()
-                let fresh = when.map { Date().timeIntervalSince($0) < 20 } ?? false
-                if let fix, fresh {
-                    let away = Geo.distance(fix, anchor)
-                    if away < 120 {
-                        steps[5].status = .passed
-                        DiagLog.shared.note("self-test: fix survived the tunnel "
-                            + "(\(Int(away))m from target) — burst mode is safe")
-                    } else {
-                        steps[5].status = .failed(
-                            "Simulation ended with the tunnel (\(Int(away)) m from target) — "
-                            + "keep the tunnel persistent while spoofing")
-                        DiagLog.shared.note("self-test: fix did NOT survive the tunnel "
-                            + "(\(Int(away))m) — burst mode is not viable on this device")
-                    }
+            let originalLifetime = session.lifetime
+            session.lifetime = .setupOnly
+            let anchor = coordinate
+            session.disconnect()
+            DiagLog.shared.note("self-test: tunnel closed, waiting 12 s for a real fix")
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+
+            let (fix, when) = fixProbe()
+            let fresh = when.map { Date().timeIntervalSince($0) < 25 } ?? false
+            if let fix, fresh {
+                let away = Geo.distance(fix, anchor)
+                if away < 120 {
+                    steps[5].status = .passed
+                    DiagLog.shared.note("self-test: fix survived the tunnel "
+                        + "(\(Int(away))m from target) — parking without a connection is safe")
                 } else {
-                    steps[5].status = .skipped("No fresh location fix to compare")
+                    steps[5].status = .failed(
+                        "Simulation ended with the tunnel (\(Int(away)) m from target) — "
+                        + "keep the tunnel persistent while spoofing")
+                    DiagLog.shared.note("self-test: fix did NOT survive the tunnel "
+                        + "(\(Int(away))m) — parking without a connection is not viable")
                 }
-                // Rebuild so the next step has a live tunnel to talk to.
-                await session.connect()
-                if session.connection.isReady {
-                    try? await session.setLocation(latitude: anchor.latitude,
-                                                   longitude: anchor.longitude)
-                }
+            } else {
+                steps[5].status = .skipped(
+                    "No fresh location fix — allow location access so this can be measured")
+                DiagLog.shared.note("self-test: durability not measured (no fresh fix)")
+            }
+
+            // Restore the setting and give the next step a live tunnel.
+            session.lifetime = originalLifetime
+            await session.connect()
+            if session.connection.isReady {
+                try? await session.setLocation(latitude: anchor.latitude,
+                                               longitude: anchor.longitude)
             }
 
             // 7. clear
@@ -152,7 +160,18 @@ final class SelfTestRunner: ObservableObject {
                 return fail(6, error.localizedDescription)
             }
 
-            DiagLog.shared.note("self-test: all steps passed")
+            let skipped = steps.filter { step in
+                if case .skipped = step.status { return true }
+                return false
+            }
+            if skipped.isEmpty {
+                DiagLog.shared.note("self-test: all \(steps.count) steps passed")
+            } else {
+                let names = skipped.map(\.title).joined(separator: "; ")
+                DiagLog.shared.note(
+                    "self-test: \(steps.count - skipped.count)/\(steps.count) passed, "
+                    + "\(skipped.count) not measured — \(names)")
+            }
         } catch {
             DiagLog.shared.note("self-test aborted: \(error.localizedDescription)")
         }
