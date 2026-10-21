@@ -35,6 +35,17 @@ struct MapScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { controlPanel }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsScreen() }
         .sheet(isPresented: $showSettings) { SettingsScreen() }
+        .alert("No Wi-Fi right now", isPresented: Binding(
+            get: { state.cellularConsentNeeded },
+            set: { if !$0 { state.cancelCellularStart() } }
+        )) {
+            Button("Use cellular mode") { state.confirmCellularStart() }
+            Button("Cancel", role: .cancel) { state.cancelCellularStart() }
+        } message: {
+            Text("Wandering will run your cellular Shortcut, set the location, then "
+                 + "turn the radios back on. About 10 seconds, and your connection "
+                 + "drops briefly.")
+        }
         .overlay(alignment: .top) { searchResultsOverlay }
         .overlay(alignment: .center) { pendingPinCard }
     }

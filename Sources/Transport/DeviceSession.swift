@@ -69,6 +69,8 @@ final class DeviceSession: ObservableObject, LocationSink {
     var pairingFileURL: URL? { PairingStore.current }
 
     @Published private(set) var pairingEntries: [PairingStore.Entry] = []
+    /// Why the last import did nothing — surfaced to the user instead of failing silently.
+    @Published var importError: String?
 
     var describe: String { connection.label }
 
@@ -217,10 +219,27 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     func importPairingFiles(_ urls: [URL]) {
-        let imported = PairingStore.importFiles(urls)
+        DiagLog.shared.note("pairing: \(urls.count) file(s) chosen")
+        var imported: [PairingStore.Entry] = []
+        var failures: [String] = []
+
+        for url in urls {
+            do {
+                imported.append(try PairingStore.importFile(url))
+            } catch {
+                let reason = "\(url.lastPathComponent): \(error.localizedDescription)"
+                failures.append(reason)
+                DiagLog.shared.log("pairing: import failed — \(reason)")
+            }
+        }
+
         pairingEntries = PairingStore.all()
         if let first = imported.first {
-            DiagLog.shared.note("pairing: \(imported.count) file(s) imported, using \(first.name)")
+            DiagLog.shared.note("pairing: \(imported.count) imported, using \(first.name) "
+                                + "· \(pairingEntries.count) available")
+            importError = nil
+        } else if !failures.isEmpty {
+            importError = failures.joined(separator: " · ")
         }
     }
 

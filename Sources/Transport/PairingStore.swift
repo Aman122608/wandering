@@ -93,25 +93,67 @@ enum PairingStore {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // A picker URL can point outside the sandbox, or at an iCloud file that has not
+        // been materialised yet. Reading it through a coordinator is what makes those
+        // two cases work; a plain copyItem fails on both, and fails without a reason.
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        DiagLog.shared.log("pairing: reading \(source.lastPathComponent)"
+                           + " (scope \(scoped ? "granted" : "not required"))")
 
-        let name = uniqueName(for: source.lastPathComponent)
-        let destination = directory.appendingPathComponent(name)
-        try FileManager.default.copyItem(at: source, to: destination)
+        var coordinationError: NSError?
+        var failure: Error?
+        var stored: Entry?
 
-        if let entry = entry(for: destination) {
-            setActive(entry)
-            DiagLog.shared.log("pairing: imported \(entry.name)"
-                + (entry.identifier.map { " (id \($0.prefix(8)))" } ?? ""))
-            return entry
+        NSFileCoordinator().coordinate(readingItemAt: source,
+                                       options: [.withoutChanges],
+                                       error: &coordinationError) { readable in
+            do {
+                let name = uniqueName(for: readable.lastPathComponent)
+                let destination = directory.appendingPathComponent(name)
+                do {
+                    try FileManager.default.copyItem(at: readable, to: destination)
+                } catch {
+                    // Different container, or a file iOS has not downloaded: read it.
+                    let data = try Data(contentsOf: readable)
+                    guard !data.isEmpty else {
+                        throw SinkError.internalFailure(
+                            "file is empty — is it still downloading from iCloud?")
+                    }
+                    try data.write(to: destination)
+                    DiagLog.shared.log("pairing: copied via read/write fallback (\(data.count) bytes)")
+                }
+                guard let entry = entry(for: destination) else {
+                    throw SinkError.internalFailure("copied file could not be read back")
+                }
+                setActive(entry)
+                DiagLog.shared.log("pairing: imported \(entry.name)"
+                    + (entry.identifier.map { " (id \($0.prefix(8)))" } ?? ""))
+                stored = entry
+            } catch {
+                failure = error
+            }
         }
-        throw SinkError.internalFailure("imported file could not be read back")
+
+        if let stored { return stored }
+        if let coordinationError {
+            DiagLog.shared.log("pairing: coordinator refused — \(coordinationError.localizedDescription)")
+            throw SinkError.internalFailure(coordinationError.localizedDescription)
+        }
+        throw failure ?? SinkError.internalFailure("import produced no file")
     }
 
     @discardableResult
     static func importFiles(_ urls: [URL]) -> [Entry] {
-        urls.compactMap { try? importFile($0) }
+        urls.compactMap { url in
+            do {
+                return try importFile(url)
+            } catch {
+                DiagLog.shared.log("pairing: import failed for \(url.lastPathComponent) — "
+                                   + "\(error.localizedDescription)")
+                return nil
+            }
+        }
     }
 
     /// Picks up pairing files that were dropped into Documents through the Files app.

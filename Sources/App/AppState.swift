@@ -59,6 +59,11 @@ final class AppState: ObservableObject {
     let session = DeviceSession()
     let airplane = AirplaneSequence()
     let supervisor = SessionSupervisor()
+    let network = NetworkMonitor()
+
+    /// Set when starting without Wi-Fi, so the UI can ask before touching the radios.
+    @Published var cellularConsentNeeded = false
+    private var consentPending: (() -> Void)?
 
     init() {
         supervisor.bind(player: player, session: session)
@@ -176,7 +181,64 @@ final class AppState: ObservableObject {
 
     // MARK: - Playback
 
+    /// Starting anything goes through here: with no Wi-Fi the cellular sequence is
+    /// needed, and that is worth one confirmation before the radios drop.
+    private func gate(_ action: @escaping () -> Void) {
+        let wantsCellular = UserDefaults.standard.bool(forKey: "airplaneInit")
+        if wantsCellular && !network.isOnWiFi && !airplane.phase.isRunning {
+            DiagLog.shared.note("start: no Wi-Fi — asking before cellular mode "
+                                + "(online: \(network.isOnline))")
+            consentPending = action
+            cellularConsentNeeded = true
+            return
+        }
+        action()
+    }
+
+    /// Runs whatever the user pressed, once consent is in hand.
+    func performStart() {
+        if selectedRoute != nil {
+            performStartRoute()
+        } else if let target = waypoints.first?.coordinate {
+            performTeleport(to: target)
+        }
+    }
+
+    func confirmCellularStart() {
+        cellularConsentNeeded = false
+        consentPending = nil
+        runCellularSequence()
+    }
+
+    func cancelCellularStart() {
+        DiagLog.shared.log("start: cellular mode declined")
+        cellularConsentNeeded = false
+        consentPending = nil
+    }
+
+    /// Tunnel up → Shortcut on → confirm radios dropped → set location → Shortcut off.
+    func runCellularSequence() {
+        Task {
+            await airplane.run(
+                target: waypoints.first?.coordinate ?? resumableTarget,
+                style: AirplaneSequence.ShortcutStyle(
+                    rawValue: UserDefaults.standard.string(forKey: "airplaneShortcutStyle")
+                        ?? "singleSwitch") ?? .singleSwitch,
+                shortcutOn: UserDefaults.standard.string(forKey: "airplaneShortcutOn")
+                    ?? "Wander Cellular Mode",
+                shortcutOff: UserDefaults.standard.string(forKey: "airplaneShortcutOff")
+                    ?? "Airplane Off",
+                connect: { await session.connect() },
+                move: { self.performStart() }
+            )
+        }
+    }
+
     func startSelectedRoute() {
+        gate { self.performStartRoute() }
+    }
+
+    private func performStartRoute() {
         guard let route = selectedRoute else { return }
         let options = PlayoutOptions(
             preset: preset,
@@ -197,6 +259,10 @@ final class AppState: ObservableObject {
     }
 
     func teleport(to coordinate: CLLocationCoordinate2D) {
+        gate { self.performTeleport(to: coordinate) }
+    }
+
+    private func performTeleport(to coordinate: CLLocationCoordinate2D) {
         DiagLog.shared.note("teleport · \(Router.format(coordinate))")
         player.teleport(to: coordinate, sink: session)
         supervisor.begin(target: coordinate)

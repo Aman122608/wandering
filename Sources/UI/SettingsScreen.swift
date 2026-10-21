@@ -144,35 +144,8 @@ struct SettingsScreen: View {
                                               systemImage: "airplane",
                                               role: .neutral,
                                               isEnabled: !state.airplane.phase.isRunning) {
-                                    Task {
-                                        await state.airplane.run(
-                                            target: state.waypoints.first?.coordinate
-                                                ?? state.resumableTarget,
-                                            style: airplaneShortcutStyle == "singleSwitch"
-                                                ? .singleSwitch : .twoShortcuts,
-                                            shortcutOn: airplaneShortcutOn,
-                                            shortcutOff: airplaneShortcutOff,
-                                            connect: { await state.session.connect() },
-                                            move: {
-                                                if let route = state.selectedRoute {
-                                                    state.startSelectedRoute()
-                                                } else if let target = state.waypoints.first?.coordinate {
-                                                    state.teleport(to: target)
-                                                }
-                                            }
-                                        )
-                                    }
+                                    state.runCellularSequence()
                                 }
-                                Text(state.airplane.phase.label)
-                                    .font(Tokens.caption)
-                                    .foregroundStyle(state.airplane.phase.isRunning ? Tokens.accent
-                                                     : Tokens.inkSecondary)
-                                if !state.airplane.detail.isEmpty {
-                                    Text(state.airplane.detail)
-                                        .font(Tokens.caption)
-                                        .foregroundStyle(Tokens.inkSecondary)
-                                }
-                            }
                         }
                     }
 
@@ -252,12 +225,20 @@ struct SettingsScreen: View {
                 }
             }
             .onReceive(state.airplane.objectWillChange) { _ in }
-            .fileImporter(isPresented: $importingPairing,
-                          allowedContentTypes: [.propertyList, .data, .xml, .item],
-                          allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result {
+            .sheet(isPresented: $importingPairing) {
+                DocumentPicker { urls in
+                    importingPairing = false
                     state.session.importPairingFiles(urls)
                 }
+                .ignoresSafeArea()
+            }
+            .alert("Import failed", isPresented: Binding(
+                get: { state.session.importError != nil },
+                set: { if !$0 { state.session.importError = nil } }
+            )) {
+                Button("OK", role: .cancel) { state.session.importError = nil }
+            } message: {
+                Text(state.session.importError ?? "")
             }
             .onAppear { state.session.refreshPairings() }
         }
