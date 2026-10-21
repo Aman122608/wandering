@@ -33,6 +33,9 @@ struct WanderingDevice {
     int connected;
 };
 
+static int wd_fail(struct IdeviceFfiError *err, char *buf, size_t len, const char *where);
+static void wd_note(char *buf, size_t len, const char *message);
+
 // MARK: - device-initiated pairing (iOS 27 flow)
 //
 // On iOS 27 the iPhone pairs with a *host it discovers*: Settings → Privacy &
@@ -66,7 +69,7 @@ int wd_pair_host(const char *name, const char *pairing_path, char *err, size_t e
     struct RpPairingFileHandle *pairing = NULL;
     struct IdeviceFfiError *e = pairable_host_accept(name, NULL, 0,
                                                     wd_pin_display_cb, NULL,
-                                                    NULL, NULL, &pairing);
+                                                    NULL, NULL, NULL, &pairing);
     if (wd_fail(e, err, err_len, "pair with device") != 0 || pairing == NULL) {
         if (e == NULL) {
             wd_note(err, err_len, "pairing returned no record");
