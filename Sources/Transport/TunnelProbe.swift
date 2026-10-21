@@ -37,12 +37,13 @@ enum TunnelProbe {
             }
         }
 
-        // 2. Known literals, in the order that has historically worked.
-        add("10.7.0.1", "default")
-        add("10.7.0.0", "default")
-        add("10.7.0.2", "default")
-        add("172.20.10.1", "personal hotspot")
+        // 2. Historical literals. Loopback first: remotepairingd answers on
+        //    127.0.0.1:49152 on current iOS, and it needs no tunnel at all.
         add("127.0.0.1", "loopback")
+        add("10.7.0.1", "LocalDevVPN target")
+        add("10.7.0.0", "LocalDevVPN device")
+        add("10.7.0.2", "LocalDevVPN sibling")
+        add("172.20.10.1", "personal hotspot")
         return out
     }
 

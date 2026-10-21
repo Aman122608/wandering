@@ -38,6 +38,11 @@ final class DiagLog: ObservableObject {
     var currentFile: URL? { handle.map { _ in logURL } }
     private var logURL: URL = URL(fileURLWithPath: "/dev/null")
 
+    /// Callable from any actor or thread; hops to the main actor to append.
+    nonisolated func log(_ message: String) {
+        Task { @MainActor in self.note(message) }
+    }
+
     func note(_ message: String) {
         let line = "[\(formatter.string(from: Date()))] \(message)"
         lines.append(line)

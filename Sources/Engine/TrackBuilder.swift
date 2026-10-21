@@ -25,6 +25,9 @@ struct PlannedRoute: Identifiable, Equatable {
 struct PlayoutOptions {
     var preset: TravelPreset
     var maxSpeedKmh: Double
+    /// Life360 / Find My style: always keep noise and micro-pauses on and never
+    /// report a suspiciously perfect fix. Radius floor is 1.5 m.
+    var sharingMode: Bool = false
     var useRoadSpeeds: Bool = true
     var jitter: Bool = true
     var variation: Bool = true
@@ -80,10 +83,13 @@ enum TrackBuilder {
 
         // 5. Life: speed variation, pedestrian pauses, then GPS noise.
         if options.variation { samples = vary(samples, options: options) }
-        if options.pauses, options.preset.pausesPerMinute > 0 {
+        if options.pauses || options.sharingMode, options.preset.pausesPerMinute > 0 {
             samples = insertPauses(samples, options: options)
         }
-        if options.jitter { samples = addJitter(samples, radius: options.preset.jitterRadius) }
+        if options.jitter || options.sharingMode {
+            let radius = max(options.preset.jitterRadius, options.sharingMode ? 1.5 : 0)
+            samples = addJitter(samples, radius: radius)
+        }
         return samples
     }
 

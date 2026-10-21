@@ -39,7 +39,7 @@ actor IdeviceClient {
         }
         device = handle
         connected = true
-        DiagLog.shared.note("ffi: tunnel open to \(endpoint.address):\(endpoint.port)")
+        DiagLog.shared.log("ffi: tunnel open to \(endpoint.address):\(endpoint.port)")
     }
 
     func prepareDeveloperServices() async throws -> DeveloperStatus {
@@ -61,16 +61,16 @@ actor IdeviceClient {
             let status = wd_developer_mode(device, &enabled, &err, err.count)
             guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
         }
-        DiagLog.shared.note("ffi: developer mode \(enabled == 1 ? "on" : "off") · iOS \(version)")
+        DiagLog.shared.log("ffi: developer mode \(enabled == 1 ? "on" : "off") · iOS \(version)")
 
         guard enabled == 1 else {
             throw SinkError.notConnected("Developer Mode is off — enable it in Settings → Privacy & Security")
         }
 
         if !mounted {
-            DiagLog.shared.note("ffi: mounting personalised disk image")
+            DiagLog.shared.log("ffi: mounting personalised disk image")
             let assets = try await DeveloperDiskImage.assets(for: version) { name, fraction in
-                DiagLog.shared.note("ddi: \(name) \(Int(fraction * 100))%")
+                DiagLog.shared.log("ddi: \(name) \(Int(fraction * 100))%")
             }
             let chipID: UInt64 = try await onQueue {
                 var value: UInt64 = 0
@@ -79,7 +79,7 @@ actor IdeviceClient {
                 guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
                 return value
             }
-            DiagLog.shared.note("ffi: UniqueChipID \(chipID)")
+            DiagLog.shared.log("ffi: UniqueChipID \(chipID)")
 
             try await onQueue {
                 var err = [CChar](repeating: 0, count: 512)
@@ -102,7 +102,7 @@ actor IdeviceClient {
                 guard status == 0 else { throw SinkError.deviceRefused(Self.string(err)) }
             }
             mounted = true
-            DiagLog.shared.note("ffi: disk image mounted")
+            DiagLog.shared.log("ffi: disk image mounted")
         }
 
         return DeveloperStatus(developerMode: enabled == 1,

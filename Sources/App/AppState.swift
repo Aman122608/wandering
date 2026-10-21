@@ -17,16 +17,34 @@ final class AppState: ObservableObject {
 
     // MARK: - Motion
 
-    @Published var preset: TravelPreset = .drive {
-        didSet { maxSpeedKmh = Geo.clamp(maxSpeedKmh, preset.speedRange.lowerBound,
-                                         preset.speedRange.upperBound) }
+    @Published var preset: TravelPreset = Defaults.preset {
+        didSet {
+            maxSpeedKmh = Geo.clamp(maxSpeedKmh, preset.speedRange.lowerBound,
+                                    preset.speedRange.upperBound)
+            Defaults.preset = preset
+        }
     }
-    @Published var maxSpeedKmh: Double = 50
-    @Published var useRoadSpeeds = true
-    @Published var variation = true
-    @Published var jitter = true
-    @Published var pauses = true
-    @Published var playbackRate: Double = 1.0
+    @Published var maxSpeedKmh: Double = Defaults.maxSpeedKmh {
+        didSet { Defaults.maxSpeedKmh = maxSpeedKmh }
+    }
+    @Published var useRoadSpeeds = Defaults.useRoadSpeeds {
+        didSet { Defaults.useRoadSpeeds = useRoadSpeeds }
+    }
+    @Published var variation = Defaults.variation {
+        didSet { Defaults.variation = variation }
+    }
+    @Published var jitter = Defaults.jitter {
+        didSet { Defaults.jitter = jitter }
+    }
+    @Published var pauses = Defaults.pauses {
+        didSet { Defaults.pauses = pauses }
+    }
+    @Published var playbackRate: Double = Defaults.playbackRate {
+        didSet { Defaults.playbackRate = playbackRate }
+    }
+    @Published var sharingMode = Defaults.sharingMode {
+        didSet { Defaults.sharingMode = sharingMode }
+    }
 
     // MARK: - Map
 
@@ -39,6 +57,7 @@ final class AppState: ObservableObject {
 
     let player = TrackPlayer()
     let session = DeviceSession()
+    let airplane = AirplaneSequence()
     private let router = Router()
     private var searchTask: Task<Void, Never>?
     private var planTask: Task<Void, Never>?
@@ -154,6 +173,7 @@ final class AppState: ObservableObject {
         let options = PlayoutOptions(
             preset: preset,
             maxSpeedKmh: maxSpeedKmh,
+            sharingMode: sharingMode,
             useRoadSpeeds: useRoadSpeeds && preset.obeysSpeedLimits,
             jitter: jitter,
             variation: variation,
@@ -227,5 +247,51 @@ final class AppState: ObservableObject {
             span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.6, 0.004),
                                    longitudeDelta: max((maxLon - minLon) * 1.6, 0.004))
         ))
+    }
+}
+
+
+/// Small, explicit persistence for the settings a session depends on.
+enum Defaults {
+    private static let store = UserDefaults.standard
+
+    static var preset: TravelPreset {
+        get { TravelPreset(rawValue: store.string(forKey: "motion.preset") ?? "") ?? .drive }
+        set { store.set(newValue.rawValue, forKey: "motion.preset") }
+    }
+
+    static var maxSpeedKmh: Double {
+        get { store.object(forKey: "motion.maxSpeed") as? Double ?? 50 }
+        set { store.set(newValue, forKey: "motion.maxSpeed") }
+    }
+
+    static var useRoadSpeeds: Bool {
+        get { store.object(forKey: "motion.roadSpeeds") as? Bool ?? true }
+        set { store.set(newValue, forKey: "motion.roadSpeeds") }
+    }
+
+    static var variation: Bool {
+        get { store.object(forKey: "motion.variation") as? Bool ?? true }
+        set { store.set(newValue, forKey: "motion.variation") }
+    }
+
+    static var jitter: Bool {
+        get { store.object(forKey: "motion.jitter") as? Bool ?? true }
+        set { store.set(newValue, forKey: "motion.jitter") }
+    }
+
+    static var pauses: Bool {
+        get { store.object(forKey: "motion.pauses") as? Bool ?? true }
+        set { store.set(newValue, forKey: "motion.pauses") }
+    }
+
+    static var playbackRate: Double {
+        get { store.object(forKey: "motion.rate") as? Double ?? 1 }
+        set { store.set(newValue, forKey: "motion.rate") }
+    }
+
+    static var sharingMode: Bool {
+        get { store.object(forKey: "motion.sharing") as? Bool ?? false }
+        set { store.set(newValue, forKey: "motion.sharing") }
     }
 }

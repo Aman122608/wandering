@@ -8,12 +8,23 @@ struct SettingsScreen: View {
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage("holdAtEnd") private var holdAtEnd = true
-    @AppStorage("useRoadSpeeds") private var useRoadSpeeds = true
     @AppStorage("airplaneInit") private var airplaneInit = false
-    @AppStorage("airplaneShortcut") private var airplaneShortcut = "Wandering Airplane"
-    @AppStorage("playbackRate") private var playbackRate = 1.0
+    @AppStorage("airplaneShortcutOn") private var airplaneShortcutOn = "Airplane On"
+    @AppStorage("airplaneShortcutOff") private var airplaneShortcutOff = "Airplane Off"
 
     @State private var importingPairing = false
+
+    private func shortcutField(_ label: String, text: Binding<String>) -> some View {
+        HStack {
+            Text(label).font(Tokens.caption)
+                .foregroundStyle(Tokens.inkSecondary)
+            Spacer()
+            TextField("Shortcut", text: text)
+                .font(Tokens.mono(12))
+                .multilineTextAlignment(.trailing)
+                .autocorrectionDisabled()
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -46,10 +57,23 @@ struct SettingsScreen: View {
                                         .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
                                 }
                             }
-                            Toggle(isOn: $useRoadSpeeds) {
+                            Toggle(isOn: $state.useRoadSpeeds) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Follow road speeds").font(Tokens.body(15))
                                     Text("Pace driving and car presets from the route's per-street speeds.")
+                                        .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
+                                }
+                            }
+                        }
+                    }
+
+                    Panel {
+                        VStack(alignment: .leading, spacing: Tokens.s3) {
+                            SectionLabel(text: "Sharing apps")
+                            Toggle(isOn: $state.sharingMode) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Life360 / Find My mode").font(Tokens.body(15))
+                                    Text("Forces GPS noise and micro-pauses on and never reports a perfect fix.")
                                         .font(Tokens.caption).foregroundStyle(Tokens.inkSecondary)
                                 }
                             }
@@ -67,13 +91,37 @@ struct SettingsScreen: View {
                                 }
                             }
                             if airplaneInit {
-                                HStack {
-                                    Text("Shortcut name").font(Tokens.caption)
+                                shortcutField("Turns it on", text: $airplaneShortcutOn)
+                                shortcutField("Turns it off", text: $airplaneShortcutOff)
+                                PrimaryButton(title: "Run the sequence",
+                                              systemImage: "airplane",
+                                              role: .neutral,
+                                              isEnabled: !state.airplane.phase.isRunning) {
+                                    Task {
+                                        await state.airplane.run(
+                                            target: state.waypoints.first?.coordinate
+                                                ?? state.resumableTarget,
+                                            shortcutOn: airplaneShortcutOn,
+                                            shortcutOff: airplaneShortcutOff,
+                                            connect: { await state.session.connect() },
+                                            move: {
+                                                if let route = state.selectedRoute {
+                                                    state.startSelectedRoute()
+                                                } else if let target = state.waypoints.first?.coordinate {
+                                                    state.teleport(to: target)
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                                Text(state.airplane.phase.label)
+                                    .font(Tokens.caption)
+                                    .foregroundStyle(state.airplane.phase.isRunning ? Tokens.accent
+                                                     : Tokens.inkSecondary)
+                                if !state.airplane.detail.isEmpty {
+                                    Text(state.airplane.detail)
+                                        .font(Tokens.caption)
                                         .foregroundStyle(Tokens.inkSecondary)
-                                    Spacer()
-                                    TextField("Shortcut", text: $airplaneShortcut)
-                                        .font(Tokens.mono(12))
-                                        .multilineTextAlignment(.trailing)
                                 }
                             }
                         }
@@ -85,10 +133,10 @@ struct SettingsScreen: View {
                             HStack {
                                 Text("Speed").font(Tokens.body(15))
                                 Spacer()
-                                Text("\(playbackRate, specifier: "%.1f")×")
+                                Text("\(state.playbackRate, specifier: "%.1f")×")
                                     .font(Tokens.display(18))
                             }
-                            Slider(value: $playbackRate, in: 0.5...4, step: 0.5)
+                            Slider(value: $state.playbackRate, in: 0.5...4, step: 0.5)
                                 .tint(Tokens.accent)
                         }
                     }
@@ -133,6 +181,7 @@ struct SettingsScreen: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .onReceive(state.airplane.objectWillChange) { _ in }
             .fileImporter(isPresented: $importingPairing,
                           allowedContentTypes: [.propertyList, .data],
                           allowsMultipleSelection: false) { result in
