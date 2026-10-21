@@ -51,11 +51,18 @@ enum TunnelProbe {
 
     static func discover(logger: ((String) -> Void)? = nil) -> TunnelEndpoint? {
         var fallback: TunnelEndpoint?
+        // A dead tunnel has to fail fast — callers retry this, so the sweep gets a budget
+        // rather than running every candidate to its own timeout.
+        let budget = Date().addingTimeInterval(4)
 
         // A dial that is going to work answers in milliseconds. Anything slower is a
         // dead address, and walking seven of them at three seconds each burned a whole
         // radio-cycle budget before this was tightened.
         for candidate in candidates() {
+            if Date() > budget {
+                DiagLog.shared.log("probe: sweep budget spent at \(candidate.address)")
+                break
+            }
             var buffer = [CChar](repeating: 0, count: 256)
             let status = candidate.address.withCString {
                 wd_probe_tunnel($0, candidate.port, &buffer, 256)

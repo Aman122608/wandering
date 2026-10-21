@@ -96,6 +96,12 @@ final class DeviceSession: ObservableObject, LocationSink {
     /// True once a write path has been chosen: the pairing tunnel or lockdownd.
     @Published private(set) var useLockdown = false
 
+    /// One connect at a time. The supervisor, the player's retry and the UI all ask for a
+    /// connection, and each one used to launch its own six-second probe sweep — that pile-up
+    /// is what made the app crawl.
+    private var connectInFlight = false
+    private var lastConnectFailure: Date?
+
     /// Set by the probe: true when the device kept the socket open, waiting for us.
     private var lastProbeWaitedForUs = false
 
@@ -147,6 +153,17 @@ final class DeviceSession: ObservableObject, LocationSink {
 
     func connect() async {
         guard !connection.isReady else { return }
+        if connectInFlight {
+            DiagLog.shared.log("connect: already in flight — joining instead of starting another")
+            return
+        }
+        if let failedAt = lastConnectFailure,
+           Date().timeIntervalSince(failedAt) < 4 {
+            DiagLog.shared.log("connect: cooling down after a failure")
+            return
+        }
+        connectInFlight = true
+        defer { connectInFlight = false }
         connection = .preparing("Looking for the developer tunnel…")
         DiagLog.shared.note("connect: begin")
         probeTunnel()
@@ -186,6 +203,7 @@ final class DeviceSession: ObservableObject, LocationSink {
             DiagLog.shared.note("connect: ready at \(Transport.shared.dialedAddress ?? "?")")
         } catch {
             connection = .failed(error.localizedDescription)
+            lastConnectFailure = Date()
             DiagLog.shared.note("connect: failed — \(error.localizedDescription)")
         }
     }
@@ -199,21 +217,18 @@ final class DeviceSession: ObservableObject, LocationSink {
     private func probeTunnel() {
         var buffer = [CChar](repeating: 0, count: 256)
 
-        if let first = TunnelProbe.candidates().first {
-            _ = first.address.withCString { wd_probe_tunnel($0, first.port, &buffer, 256) }
-            let pairingProbe = String(cString: buffer)
-            DiagLog.shared.log("probe \(first.address):\(first.port) — \(pairingProbe)")
-            // Only this probe says whether the pairing service itself waited for us.
-            lastProbeWaitedForUs = pairingProbe.contains("waits for us")
+        // Only the swap target matters: if it refuses, nothing else on this device will
+        // answer, and sweeping the rest of the candidates just costs seconds.
+        let swapTarget = "10.7.0.1"
+        _ = swapTarget.withCString { wd_probe_tunnel($0, 49152, &buffer, 256) }
+        let pairingProbe = String(cString: buffer)
+        DiagLog.shared.log("probe \(swapTarget):49152 — \(pairingProbe)")
+        lastProbeWaitedForUs = pairingProbe.contains("waits for us")
+
+        if !lastProbeWaitedForUs {
+            DiagLog.shared.log("probe: the pairing service is not answering — skipping lockdownd")
+            return
         }
-
-        let lockdownHost = "10.7.0.1"
-        let lockdownPort: UInt16 = 62078
-        _ = lockdownHost.withCString { wd_probe_tunnel($0, lockdownPort, &buffer, 256) }
-        DiagLog.shared.log("probe \(lockdownHost):\(lockdownPort) — \(String(cString: buffer))")
-
-        _ = lockdownHost.withCString { wd_probe_lockdown($0, lockdownPort, &buffer, 256) }
-        DiagLog.shared.log("lockdownd \(lockdownHost):\(lockdownPort) — \(String(cString: buffer))")
     }
 
     /// A reset only means "this record was replaced" when the device waited for us to
