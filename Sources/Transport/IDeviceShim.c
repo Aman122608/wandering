@@ -10,6 +10,9 @@
 #include "IDeviceShim.h"
 
 #include <arpa/inet.h>
+#include <pthread.h>
+#include <time.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +32,85 @@ struct WanderingDevice {
     uint16_t port;
     int connected;
 };
+
+// MARK: - pairing PIN handshake
+//
+// `tunnel_create_rppairing` runs a pair-setup on the same socket when the device has
+// never been paired with this host, and asks for the code shown on the device through
+// a callback. Without one it cannot complete, and the device drops the connection —
+// which is what "Connection reset by peer" was. The callback runs on the FFI's thread
+// and must block until the user types the six digits.
+
+static pthread_mutex_t g_pin_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pin_cond = PTHREAD_COND_INITIALIZER;
+static char g_pin[16];
+static int g_pin_ready = 0;
+static int g_pin_cancelled = 0;
+static int g_pin_pending_flag = 0;
+static wd_pin_request_fn g_pin_request = NULL;
+static void *g_pin_request_context = NULL;
+
+void wd_set_pin_provider(wd_pin_request_fn request, void *context) {
+    g_pin_request = request;
+    g_pin_request_context = context;
+}
+
+int wd_submit_pin(const char *pin) {
+    if (pin == NULL) {
+        return -1;
+    }
+    pthread_mutex_lock(&g_pin_mutex);
+    snprintf(g_pin, sizeof(g_pin), "%s", pin);
+    g_pin_ready = 1;
+    g_pin_pending_flag = 0;
+    pthread_cond_broadcast(&g_pin_cond);
+    pthread_mutex_unlock(&g_pin_mutex);
+    return 0;
+}
+
+void wd_cancel_pin(void) {
+    pthread_mutex_lock(&g_pin_mutex);
+    g_pin_cancelled = 1;
+    g_pin_pending_flag = 0;
+    pthread_cond_broadcast(&g_pin_cond);
+    pthread_mutex_unlock(&g_pin_mutex);
+}
+
+int wd_pin_pending(void) {
+    pthread_mutex_lock(&g_pin_mutex);
+    int pending = g_pin_pending_flag;
+    pthread_mutex_unlock(&g_pin_mutex);
+    return pending;
+}
+
+static const char *wd_pin_callback(void *context) {
+    (void)context;
+    pthread_mutex_lock(&g_pin_mutex);
+    g_pin_ready = 0;
+    g_pin_cancelled = 0;
+    g_pin[0] = 0;
+    g_pin_pending_flag = 1;
+    pthread_mutex_unlock(&g_pin_mutex);
+
+    if (g_pin_request != NULL) {
+        g_pin_request(g_pin_request_context);
+    }
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 180;
+
+    pthread_mutex_lock(&g_pin_mutex);
+    while (!g_pin_ready && !g_pin_cancelled) {
+        if (pthread_cond_timedwait(&g_pin_cond, &g_pin_mutex, &deadline) == ETIMEDOUT) {
+            break;
+        }
+    }
+    int ready = g_pin_ready;
+    g_pin_pending_flag = 0;
+    pthread_mutex_unlock(&g_pin_mutex);
+    return ready ? g_pin : NULL;
+}
 
 // MARK: - helpers
 
@@ -137,11 +219,19 @@ int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
     }
 
     e = tunnel_create_rppairing((const idevice_sockaddr *)&addr, (idevice_socklen_t)sizeof(addr),
-                                "Wandering", dev->pairing, NULL, NULL,
+                                "Wandering", dev->pairing, wd_pin_callback, NULL,
                                 &dev->adapter, &dev->handshake);
     if (wd_fail(e, err, err_len, "open remote pairing tunnel") != 0) {
         wd_disconnect(dev);
         return -1;
+    }
+
+    // A first-time pair-setup rewrites the pairing file in place; without saving it the
+    // next launch would have to ask for the PIN again.
+    struct IdeviceFfiError *save_err = rp_pairing_file_write(dev->pairing, pairing_path);
+    if (save_err != NULL) {
+        wd_note(err, err_len, "paired, but the updated pairing file could not be saved");
+        idevice_error_free(save_err);
     }
 
     e = remote_server_connect_rsd(dev->adapter, dev->handshake, &dev->server);

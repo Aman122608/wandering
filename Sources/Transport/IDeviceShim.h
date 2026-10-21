@@ -32,6 +32,22 @@ int wd_connect(WanderingDevice *dev, const char *ip, uint16_t port,
 
 void wd_disconnect(WanderingDevice *dev);
 
+/// Called (from a background thread) when the device wants a pairing PIN.
+/// The connect call blocks until `wd_submit_pin` or `wd_cancel_pin` is invoked.
+typedef void (*wd_pin_request_fn)(void *context);
+
+/// Install the callback that asks the UI for a PIN. Call once at launch.
+void wd_set_pin_provider(wd_pin_request_fn request, void *context);
+
+/// Hand the PIN to the waiting handshake. Returns 0 when accepted.
+int wd_submit_pin(const char *pin);
+
+/// Abandon a waiting PIN request.
+void wd_cancel_pin(void);
+
+/// True while a handshake is blocked waiting for a PIN.
+int wd_pin_pending(void);
+
 /// 1 = developer mode enabled, 0 = disabled, < 0 = error.
 int wd_developer_mode(WanderingDevice *dev, int *enabled, char *err, size_t err_len);
 

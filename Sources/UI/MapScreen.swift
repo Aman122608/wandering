@@ -8,6 +8,8 @@ struct MapScreen: View {
     @State private var showSettings = false
     @State private var pendingPin: CLLocationCoordinate2D?
     @State private var pendingTitle: String = ""
+    @StateObject private var pinBroker = PinBroker.shared
+    @State private var pinEntry = ""
 
     var body: some View {
         MapReader { proxy in
@@ -35,6 +37,7 @@ struct MapScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { controlPanel }
         .sheet(isPresented: $showDiagnostics) { DiagnosticsScreen() }
         .sheet(isPresented: $showSettings) { SettingsScreen() }
+        .sheet(isPresented: $pinBroker.isWaiting) { pinPrompt }
         .alert("No Wi-Fi right now", isPresented: Binding(
             get: { state.cellularConsentNeeded },
             set: { if !$0 { state.cancelCellularStart() } }
@@ -526,6 +529,38 @@ struct MapScreen: View {
             }
             state.startSelectedRoute()
         }
+    }
+
+    // MARK: - Pairing code
+
+    private var pinPrompt: some View {
+        VStack(alignment: .leading, spacing: Tokens.s4) {
+            Text("Pair with your iPhone").font(Tokens.heading(20))
+            Text("Your iPhone is showing a 6-digit code. Enter it here — this happens "
+                 + "once, and the app saves the result.")
+                .font(Tokens.body(15))
+                .foregroundStyle(Tokens.inkSecondary)
+            TextField("000000", text: $pinEntry)
+                .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .font(Tokens.display(28))
+                .padding(Tokens.s3)
+                .background(Tokens.surface, in: RoundedRectangle(cornerRadius: Tokens.rMedium))
+            HStack(spacing: Tokens.s3) {
+                PrimaryButton(title: "Pair", role: .primary, isEnabled: pinEntry.count >= 4) {
+                    pinBroker.submit(pinEntry)
+                    pinEntry = ""
+                }
+                PrimaryButton(title: "Cancel", role: .neutral) {
+                    pinBroker.cancel()
+                    pinEntry = ""
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Tokens.s4)
+        .presentationDetents([.height(340)])
+        .background(Tokens.canvas)
     }
 
     // MARK: - Formatting

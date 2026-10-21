@@ -29,6 +29,10 @@ enum TunnelLifetime: String, CaseIterable, Identifiable {
 /// once it has accepted it.
 @MainActor
 final class DeviceSession: ObservableObject, LocationSink {
+    init() {
+        installPinProvider()
+    }
+
 
     enum Connection: Equatable {
         case idle
