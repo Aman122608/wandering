@@ -33,8 +33,8 @@ final class DeviceSession: ObservableObject, LocationSink {
     @Published private(set) var lastWrite: Date?
     @Published private(set) var writeCount = 0
 
-    /// Set by the transport once a pairing file has been imported.
-    @Published var pairingFileURL: URL?
+    /// The pairing file the transport will use (the selected one in PairingStore).
+    var pairingFileURL: URL? { PairingStore.current }
 
     var describe: String { connection.label }
 
@@ -96,43 +96,29 @@ final class DeviceSession: ObservableObject, LocationSink {
 
     // MARK: - Pairing
 
-    func importPairingFile(_ url: URL) {
-        do {
-            let stored = try PairingStore.importFile(url)
-            pairingFileURL = stored
-            DiagLog.shared.note("pairing file imported: \(stored.lastPathComponent)")
-        } catch {
-            DiagLog.shared.note("pairing import failed: \(error.localizedDescription)")
-        }
-    }
-}
+    @Published private(set) var pairingEntries: [PairingStore.Entry] = []
 
-/// Keeps the RemotePairing plist in Application Support, where the transport expects it.
-enum PairingStore {
-    static var directory: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    func refreshPairings() {
+        _ = PairingStore.adoptLooseFiles()
+        pairingEntries = PairingStore.all()
     }
 
-    static var current: URL? {
-        guard let dir = directory else { return nil }
-        let url = dir.appendingPathComponent("rp_pairing_file.plist")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    func importPairingFiles(_ urls: [URL]) {
+        let imported = PairingStore.importFiles(urls)
+        pairingEntries = PairingStore.all()
+        if let first = imported.first {
+            DiagLog.shared.note("pairing: \(imported.count) file(s) imported, using \(first.name)")
+        }
     }
 
-    static func importFile(_ source: URL) throws -> URL {
-        guard let dir = directory else {
-            throw SinkError.internalFailure("no application support directory")
-        }
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let destination = dir.appendingPathComponent("rp_pairing_file.plist")
+    func selectPairing(_ entry: PairingStore.Entry) {
+        PairingStore.setActive(entry)
+        pairingEntries = PairingStore.all()
+        DiagLog.shared.note("pairing: selected \(entry.name)")
+    }
 
-        let scoped = source.startAccessingSecurityScopedResource()
-        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: source, to: destination)
-        return destination
+    func removePairing(_ entry: PairingStore.Entry) {
+        PairingStore.remove(entry)
+        pairingEntries = PairingStore.all()
     }
 }

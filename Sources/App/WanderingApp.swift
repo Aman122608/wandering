@@ -17,6 +17,7 @@ struct WanderingApp: App {
                     // Ask once, early: background location needs authorisation
                     // before the first session, not during it.
                     location.requestPermission()
+                    state.session.refreshPairings()
                     DiagLog.shared.note("app ready · pairing file "
                         + (PairingStore.current == nil ? "missing" : "present"))
                 }

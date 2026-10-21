@@ -27,6 +27,11 @@ struct DiagnosticsScreen: View {
                                     StatusChip(text: state.player.phase.label, tone: .busy)
                                 }
                             }
+                            DetailRow(label: "pairing",
+                                      value: state.session.pairingFileURL?.lastPathComponent
+                                             ?? "none imported")
+                            DetailRow(label: "stored files",
+                                      value: "\(state.session.pairingEntries.count)")
                             DetailRow(label: "endpoint", value: Transport.shared.dialedAddress ?? "—")
                             DetailRow(label: "developer mode",
                                       value: state.session.developerModeEnabled ? "on" : "off")

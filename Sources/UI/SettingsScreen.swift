@@ -14,6 +14,40 @@ struct SettingsScreen: View {
 
     @State private var importingPairing = false
 
+    private func pairingRow(_ entry: PairingStore.Entry) -> some View {
+        let active = state.session.pairingFileURL?.lastPathComponent == entry.name
+        return Button {
+            state.session.selectPairing(entry)
+        } label: {
+            HStack(spacing: Tokens.s2) {
+                Image(systemName: active ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(active ? Tokens.accent : Tokens.inkSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.name)
+                        .font(Tokens.mono(12))
+                        .foregroundStyle(Tokens.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(entry.subtitle)
+                        .font(Tokens.caption)
+                        .foregroundStyle(Tokens.inkSecondary)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    state.session.removePairing(entry)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Tokens.inkSecondary)
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func shortcutField(_ label: String, text: Binding<String>) -> some View {
         HStack {
             Text(label).font(Tokens.caption)
@@ -147,14 +181,19 @@ struct SettingsScreen: View {
                             Button {
                                 importingPairing = true
                             } label: {
-                                Label(state.session.pairingFileURL == nil
-                                      ? "Import pairing file"
-                                      : "Replace pairing file",
-                                      systemImage: "doc.badge.plus")
+                                Label("Import pairing files", systemImage: "doc.badge.plus")
                                     .font(Tokens.body(15))
                             }
-                            if let url = state.session.pairingFileURL {
-                                DetailRow(label: "on device", value: url.lastPathComponent)
+
+                            if state.session.pairingEntries.isEmpty {
+                                Text("Pick one of your saved pairing files, or drop them into "
+                                     + "Files → On My iPhone → Wandering and reopen.")
+                                    .font(Tokens.caption)
+                                    .foregroundStyle(Tokens.inkSecondary)
+                            } else {
+                                ForEach(state.session.pairingEntries) { entry in
+                                    pairingRow(entry)
+                                }
                             }
                             Button {
                                 Task { await state.session.connect() }
@@ -183,12 +222,13 @@ struct SettingsScreen: View {
             }
             .onReceive(state.airplane.objectWillChange) { _ in }
             .fileImporter(isPresented: $importingPairing,
-                          allowedContentTypes: [.propertyList, .data],
-                          allowsMultipleSelection: false) { result in
-                if case .success(let urls) = result, let url = urls.first {
-                    state.session.importPairingFile(url)
+                          allowedContentTypes: [.propertyList, .data, .xml, .item],
+                          allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result {
+                    state.session.importPairingFiles(urls)
                 }
             }
+            .onAppear { state.session.refreshPairings() }
         }
     }
 }
