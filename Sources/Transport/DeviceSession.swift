@@ -36,6 +36,41 @@ final class DeviceSession: ObservableObject, LocationSink {
     /// The pairing file the transport will use (the selected one in PairingStore).
     var pairingFileURL: URL? { PairingStore.current }
 
+    /// How long the tunnel stays up around a write.
+    ///
+    /// `persistent` keeps it open for the whole session (most reliable).
+    /// `burst` opens it for a moment around each write and closes it again, so the
+    /// VPN indicator only flashes instead of sitting in the status bar. Whether the
+    /// device keeps the simulated fix between bursts is device- and iOS-dependent —
+    /// the supervisor watches for a snap-back and switches back to persistent if it
+    /// catches one, so burst can never leave you silently un-spoofed.
+    @Published var burstTunnel: Bool =
+        UserDefaults.standard.bool(forKey: "tunnel.burst") {
+        didSet {
+            UserDefaults.standard.set(burstTunnel, forKey: "tunnel.burst")
+            if !burstTunnel { cancelBurstClose() }
+            DiagLog.shared.note("tunnel: lifetime set to \(burstTunnel ? "burst" : "persistent")")
+        }
+    }
+
+    private var burstCloseWorkItem: DispatchWorkItem?
+
+    private func scheduleBurstClose() {
+        cancelBurstClose()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.burstTunnel else { return }
+            DiagLog.shared.note("tunnel: closing (burst window elapsed)")
+            self.disconnect()
+        }
+        burstCloseWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
+    }
+
+    private func cancelBurstClose() {
+        burstCloseWorkItem?.cancel()
+        burstCloseWorkItem = nil
+    }
+
     var describe: String { connection.label }
 
     // MARK: - Lifecycle
@@ -55,6 +90,7 @@ final class DeviceSession: ObservableObject, LocationSink {
     }
 
     func disconnect() {
+        cancelBurstClose()
         Transport.shared.shutDown()
         connection = .idle
         developerModeEnabled = false
@@ -75,8 +111,15 @@ final class DeviceSession: ObservableObject, LocationSink {
             try await Transport.shared.setLocation(latitude: latitude, longitude: longitude)
             writeCount += 1
             lastWrite = Date()
+            if burstTunnel { scheduleBurstClose() }
         } catch {
             connection = .failed(error.localizedDescription)
+            if burstTunnel {
+                // A failed burst may just be a torn-down tunnel; drop the handle so
+                // the next write rebuilds cleanly instead of reusing a dead one.
+                Transport.shared.shutDown()
+                connection = .idle
+            }
             throw error
         }
     }

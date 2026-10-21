@@ -177,6 +177,16 @@ final class SessionSupervisor: ObservableObject {
         }
         guard snapBackHits >= snapBackHitsBeforeReassert else { return }
         snapBackHits = 0
+        if session?.burstTunnel == true {
+            // Burst mode means the tunnel is closed most of the time; if the device
+            // is dropping the fix between writes, that trade is not worth it.
+            session?.burstTunnel = false
+            note = "Burst tunnel cannot hold the fix — switched to persistent"
+            DiagLog.shared.note("supervisor: burst tunnel dropped the fix, "
+                + "falling back to persistent")
+            Task { _ = await recover(reason: "burst tunnel lost the fix") }
+            return
+        }
         note = "Real fix \(Int(drift)) m from target — re-asserting"
         DiagLog.shared.note("supervisor: snap-back \(Int(drift))m, re-asserting")
         player.reassert()
