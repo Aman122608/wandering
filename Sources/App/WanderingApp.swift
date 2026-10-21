@@ -37,7 +37,10 @@ struct WanderingApp: App {
                     if let fix { state.supervisor.observeRealFix(fix) }
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { state.resumeAfterForeground() }
+                    if phase == .active {
+                        state.airplane.flushPendingRestore()
+                        state.resumeAfterForeground()
+                    }
                 }
                 .onReceive(state.player.$phase) { phase in
                     if phase.isActive {

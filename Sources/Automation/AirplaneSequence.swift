@@ -89,6 +89,11 @@ final class AirplaneSequence: ObservableObject {
     }
 
     /// Remembers what to send when a run is cut short.
+    /// A restore leg that could not be sent because the app was not in the foreground.
+    /// `UIApplication.open` fails silently from the background, which left the radio off —
+    /// that is the "finicky" part of cellular mode.
+    private var pendingRestore = false
+
     private var lastStyle: ShortcutStyle = .singleSwitch
     private var lastOn = ""
     private var lastOff = ""
@@ -222,7 +227,26 @@ final class AirplaneSequence: ObservableObject {
     /// Runs the shortcut through Shortcuts' x-callback scheme. The callback is not
     /// required for the sequence to work — the radios themselves are the evidence —
     /// but it makes the Shortcut able to report back later.
+    /// Send the restore leg as soon as the app is in the foreground.
+    func flushPendingRestore() {
+        guard pendingRestore else { return }
+        pendingRestore = false
+        DiagLog.shared.note("airplane: app is active again — sending the restore leg")
+        openShortcut(style: lastStyle, on: lastOn, off: lastOff, input: "off")
+    }
+
     private func openShortcut(style: ShortcutStyle, on: String, off: String, input: String) {
+        // A shortcut can only be opened from the foreground. Queueing beats pretending it
+        // ran and leaving the radio off.
+        guard UIApplication.shared.applicationState == .active else {
+            if input == "off" {
+                pendingRestore = true
+                DiagLog.shared.log("airplane: restore queued (app is not in the foreground)")
+            } else {
+                DiagLog.shared.log("airplane: not sent — app is not in the foreground")
+            }
+            return
+        }
         let name = style == .singleSwitch ? on : (input == "on" ? on : off)
         guard !name.isEmpty,
               let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),

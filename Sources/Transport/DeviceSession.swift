@@ -101,7 +101,7 @@ final class DeviceSession: ObservableObject, LocationSink {
     /// is what made the app crawl.
     private var holdTask: Task<Void, Never>?
     private var holdCoordinate: CLLocationCoordinate2D?
-    private var connectInFlight = false
+    private var connectTask: Task<Void, Never>?
     private var lastConnectFailure: Date?
 
     /// Set by the probe: true when the device kept the socket open, waiting for us.
@@ -155,17 +155,29 @@ final class DeviceSession: ObservableObject, LocationSink {
 
     func connect() async {
         guard !connection.isReady else { return }
-        if connectInFlight {
-            DiagLog.shared.log("connect: already in flight — joining instead of starting another")
+
+        // Join the attempt that is already running and wait for ITS result. Returning
+        // early here made the cellular sequence believe the tunnel was up — it then wrote
+        // through a connection that did not exist yet, and every retry after that failed.
+        if let task = connectTask {
+            DiagLog.shared.log("connect: joining the attempt already in flight")
+            await task.value
             return
         }
+
+        let task = Task { @MainActor in await self.performConnect() }
+        connectTask = task
+        await task.value
+        connectTask = nil
+    }
+
+    private func performConnect() async {
+        guard !connection.isReady else { return }
         if let failedAt = lastConnectFailure,
            Date().timeIntervalSince(failedAt) < 4 {
             DiagLog.shared.log("connect: cooling down after a failure")
             return
         }
-        connectInFlight = true
-        defer { connectInFlight = false }
         connection = .preparing("Looking for the developer tunnel…")
         DiagLog.shared.note("connect: begin")
         probeTunnel()
@@ -181,7 +193,6 @@ final class DeviceSession: ObservableObject, LocationSink {
                 return
             } catch {
                 DiagLog.shared.note("connect: pairing tunnel failed — \(error.localizedDescription)")
-                offerPairingAfterReset(error.localizedDescription)
             }
         }
 
@@ -208,47 +219,6 @@ final class DeviceSession: ObservableObject, LocationSink {
             lastConnectFailure = Date()
             DiagLog.shared.note("connect: failed — \(error.localizedDescription)")
         }
-    }
-
-    /// Reports what the tunnel actually does before any handshake is attempted.
-    ///
-    /// Three measurements, because they fail differently:
-    /// * 49152 — the remote-pairing service (silent = waits for us, close = nothing there)
-    /// * 62078 — lockdownd, which LocalDevVPN is documented to expose on 10.7.0.1
-    /// * a real QueryType to lockdownd, which needs no pairing and so proves the tunnel
-    private func probeTunnel() {
-        var buffer = [CChar](repeating: 0, count: 256)
-
-        // Only the swap target matters: if it refuses, nothing else on this device will
-        // answer, and sweeping the rest of the candidates just costs seconds.
-        let swapTarget = "10.7.0.1"
-        _ = swapTarget.withCString { wd_probe_tunnel($0, 49152, &buffer, 256) }
-        let pairingProbe = String(cString: buffer)
-        DiagLog.shared.log("probe \(swapTarget):49152 — \(pairingProbe)")
-        lastProbeWaitedForUs = pairingProbe.contains("waits for us")
-
-        if !lastProbeWaitedForUs {
-            DiagLog.shared.log("probe: the pairing service is not answering — skipping lockdownd")
-            return
-        }
-    }
-
-    /// A reset only means "this record was replaced" when the device waited for us to
-    /// speak. If it hung up unprompted, the tunnel is the problem and pairing would be
-    /// theatre.
-    private func offerPairingAfterReset(_ message: String) {
-        let lowered = message.lowercased()
-        guard lowered.contains("reset") || lowered.contains("54") else { return }
-        guard lastProbeWaitedForUs else {
-            DiagLog.shared.note("connect: reset with an unresponsive tunnel — pairing skipped")
-            return
-        }
-        guard !PairHostBroker.shared.isPairing else { return }
-        DiagLog.shared.note("connect: reset — starting the pairing flow the device accepts")
-        PairHostBroker.shared.onPaired = { [weak self] _ in
-            Task { await self?.connect() }
-        }
-        PairHostBroker.shared.start()
     }
 
     func disconnect() {
