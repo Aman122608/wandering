@@ -630,7 +630,10 @@ struct MapScreen: View {
         switch state.player.phase {
         case .playing: return "Pause"
         case .paused: return "Resume"
-        case .holding: return "Pause"
+        case .holding:
+            // Parked after a teleport. A planned route is the obvious next step, and
+            // requiring a Stop first was pure friction.
+            return state.selectedRoute != nil ? "Start route" : "Pause"
         default: return state.routes.isEmpty ? "Connect" : "Move"
         }
     }
@@ -644,23 +647,30 @@ struct MapScreen: View {
     }
 
     private var canStart: Bool {
+        if state.selectedRoute != nil { return true }
         if state.player.phase == .playing || state.player.phase == .holding
             || state.player.phase == .paused { return true }
-        return state.selectedRoute != nil
+        return state.waypoints.isEmpty == false
     }
 
     private func primaryAction() {
         switch state.player.phase {
         case .playing, .holding:
-            state.player.pause()
+            if state.player.phase == .holding, state.selectedRoute != nil {
+                state.startSelectedRoute()
+            } else {
+                state.player.pause()
+            }
         case .paused:
             state.player.resume()
         default:
-            guard state.selectedRoute != nil else {
-                Task { await state.session.connect() }
-                return
+            if state.selectedRoute != nil {
+                state.startSelectedRoute()
+            } else if let target = state.waypoints.first?.coordinate {
+                state.teleport(to: target)
+            } else {
+                state.startSelectedRoute()
             }
-            state.startSelectedRoute()
         }
     }
 

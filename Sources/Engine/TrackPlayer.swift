@@ -49,6 +49,11 @@ final class TrackPlayer: ObservableObject {
 
     /// Called when a write fails. Returning true means the transport recovered and
     /// the same sample should be retried; false lets the failure counter climb.
+    /// Supplied by the app: waits for one audio buffer, so the playback clock keeps
+    /// running while the app is backgrounded.
+    var audioTick: (() async -> Void)?
+    var audioTickPeriod: Double = 0
+
     var onWriteFailure: (@MainActor (Error) async -> Bool)?
     /// Fired after every successful write, so the supervisor knows the stream is alive.
     var onWriteSuccess: (@MainActor (CLLocationCoordinate2D) -> Void)?
@@ -241,9 +246,15 @@ final class TrackPlayer: ObservableObject {
                 try? await Task.sleep(nanoseconds: 150_000_000)
                 continue
             }
-            let step = min(remaining, 0.15)
-            try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
-            remaining -= step
+            if let audioTick, audioTickPeriod > 0 {
+                // Advance by real audio time, not by a sleep the suspension can eat.
+                await audioTick()
+                remaining -= audioTickPeriod
+            } else {
+                let step = min(remaining, 0.15)
+                try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+                remaining -= step
+            }
         }
     }
 }

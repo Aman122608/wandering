@@ -19,6 +19,18 @@ final class AudioKeepAlive: ObservableObject {
 
     @Published private(set) var health: Health = .off
 
+    /// One silent buffer's length, and the tick the movement loop can follow.
+    ///
+    /// `Task.sleep` stops counting the moment iOS suspends the process, which is why a
+    /// route froze as soon as the app went to the background. A player-node completion
+    /// keeps firing while the audio session is playing — that is the whole point of the
+    /// silent loop — so the playback clock is taken from there instead.
+    static let tickPeriod: Double = 0.25
+
+    /// Set by the movement loop: `await nextTick()` returns once per buffer.
+    private var tickContinuation: CheckedContinuation<Void, Never>?
+    var onTick: (() -> Void)?
+
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var timer: Timer?
@@ -79,8 +91,17 @@ final class AudioKeepAlive: ObservableObject {
         }
     }
 
+    /// Suspends until the audio graph has played one more buffer.
+    func nextTick() async {
+        // No audio means no clock: return instead of suspending forever.
+        guard running, engine.isRunning, player.isPlaying else { return }
+        await withCheckedContinuation { continuation in
+            tickContinuation = continuation
+        }
+    }
+
     private func scheduleSilence(format: AVAudioFormat) {
-        let frames = AVAudioFrameCount(max(format.sampleRate, 8_000))
+        let frames = AVAudioFrameCount(max(format.sampleRate * Self.tickPeriod, 2_048))
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
             return
         }
@@ -90,13 +111,29 @@ final class AudioKeepAlive: ObservableObject {
                 memset(channels[channel], 0, Int(frames) * MemoryLayout<Float>.size)
             }
         }
-        player.scheduleBuffer(buffer, at: nil, options: [.loops])
+        // No `.loops`: each completion is a tick, and scheduling the next buffer from
+        // inside it is what turns the silent loop into a background-capable clock.
+        player.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.running else { return }
+                self.scheduleSilence(format: format)
+                self.onTick?()
+                self.tickContinuation?.resume()
+                self.tickContinuation = nil
+            }
+        }
     }
 
     // MARK: - Health
 
     private func tick() {
         guard running else { return }
+        // If a completion never arrives (interrupted route, graph rebuild), release the
+        // playback loop anyway — it advances in 2 s steps rather than freezing.
+        if let pending = tickContinuation {
+            tickContinuation = nil
+            pending.resume()
+        }
         let playing = player.isPlaying
         let engineRunning = engine.isRunning
         if playing && engineRunning {

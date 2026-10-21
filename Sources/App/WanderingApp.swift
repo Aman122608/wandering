@@ -21,6 +21,11 @@ struct WanderingApp: App {
                     // before the first session, not during it.
                     location.requestPermission()
                     state.session.refreshPairings()
+                    state.player.audioTick = { [weak audio] in
+                        await audio?.nextTick()
+                    }
+                    state.player.audioTickPeriod = AudioKeepAlive.tickPeriod
+                    audio.onTick = nil
                     state.session.fixProbe = { [weak location] in
                         (location?.lastCoordinate, location?.lastFix)
                     }
