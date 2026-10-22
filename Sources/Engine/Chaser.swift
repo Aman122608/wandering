@@ -25,6 +25,7 @@ final class Chaser: NSObject, ObservableObject {
     @Published private(set) var writeCount = 0
     @Published private(set) var currentPoint: CLLocationCoordinate2D?
     @Published private(set) var pathMeters: Double = 0
+    @Published private(set) var cursorMeters: Double = 0
     /// Writer state, so the card can say more than "it is on".
     @Published private(set) var writesPerMinute = 0
 
@@ -114,6 +115,8 @@ final class Chaser: NSObject, ObservableObject {
         gapMeters = 0
         reportedSpeedKmh = 0
         consecutiveFailures = 0
+        lastAcceptedAt = .distantPast
+        lastStatusLog = .distantPast
         isRunning = true
         sinceLastWrite = .distantPast
         lastTick = Date()
@@ -161,9 +164,10 @@ final class Chaser: NSObject, ObservableObject {
         reportedSpeedKmh = 0
         status = "stopped"
         DiagLog.shared.note("chase: stopped after \(Int(cursor)) m · cap \(Int(capKmh)) km/h")
-        if let sink, let last = path.last {
-            // Park: the last reported point stays, re-sent on the usual cadence.
-            await sink.hold(at: last)
+        if let sink, !path.isEmpty {
+            // Park at the point we were reporting, not at the end of the real path —
+            // otherwise stopping snaps the spoof forward to where the phone actually is.
+            await sink.hold(at: position(at: cursor))
         }
     }
 
@@ -226,8 +230,9 @@ final class Chaser: NSObject, ObservableObject {
         write(position: point, force: false)
     }
 
-    private func write(position point: CLLocationCoordinate2D, force: Bool) {
+    private func write(position point: CLLocationCoordinate2D, force: Bool = false) {
         guard let sink else { return }
+        _ = force
         let target = jitter.next(around: point)
         Task { [weak self] in
             do {
@@ -238,6 +243,7 @@ final class Chaser: NSObject, ObservableObject {
                 self.writeCount += 1
                 self.currentPoint = target
                 self.pathMeters = self.lengths.last ?? 0
+                self.cursorMeters = self.cursor
             } catch {
                 guard let self else { return }
                 self.consecutiveFailures += 1
@@ -320,7 +326,11 @@ final class Chaser: NSObject, ObservableObject {
 
     private func compact(keeping count: Int) {
         guard path.count > count else { return }
-        let dropIndex = path.count - count
+        var dropIndex = path.count - count
+        // Only discard what is already behind the cursor: dropping ahead of it would
+        // silently teleport the reported position forward.
+        while dropIndex > 0, lengths[dropIndex] > cursor { dropIndex -= 1 }
+        guard dropIndex > 0 else { return }
         let dropped = lengths[dropIndex]
         path.removeFirst(dropIndex)
         lengths = lengths.dropFirst(dropIndex).map { $0 - dropped }
