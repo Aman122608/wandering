@@ -93,6 +93,7 @@ final class DeviceSession: ObservableObject, LocationSink {
     /// Supplies the phone's own CoreLocation fix, so a write can be confirmed
     /// rather than merely reported as accepted.
     var fixProbe: (() -> (CLLocationCoordinate2D?, Date?))?
+    var suppressVerification = false
     /// True once a write path has been chosen: the pairing tunnel or lockdownd.
     @Published private(set) var useLockdown = false
 
@@ -262,8 +263,10 @@ final class DeviceSession: ObservableObject, LocationSink {
             writeCount += 1
             lastWrite = Date()
             if lifetime == .setupOnly, !isStreaming { scheduleIdleClose() }
-            scheduleVerification(target: CLLocationCoordinate2D(latitude: latitude,
-                                                               longitude: longitude))
+            if !suppressVerification {
+                scheduleVerification(target: CLLocationCoordinate2D(latitude: latitude,
+                                                                   longitude: longitude))
+            }
         } catch {
             connection = .failed(error.localizedDescription)
             if lifetime == .setupOnly {

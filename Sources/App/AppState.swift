@@ -224,6 +224,7 @@ final class AppState: ObservableObject {
                     DiagLog.shared.note("chase: no tunnel — not starting")
                     return
                 }
+                session.suppressVerification = true
                 chaser.start(sink: session)
             }
             return
@@ -277,6 +278,7 @@ final class AppState: ObservableObject {
 
     func stopChase() {
         chaseRequested = false
+        session.suppressVerification = false
         Task { await chaser.stop() }
     }
 

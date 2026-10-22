@@ -54,6 +54,11 @@ final class Chaser: NSObject, ObservableObject {
     private var lastFixAt = Date.distantPast
     private var lastFixAccuracy: Double = .infinity
     private var lastAccepted: CLLocation?
+    /// When the last fix was *accepted into the path*. The outlier check has to
+    /// compare against this, not against `lastFixAt`, which is stamped before the
+    /// check runs — that made every interval zero and rejected valid fixes.
+    private var lastAcceptedAt = Date.distantPast
+    private var lastStatusLog = Date.distantPast
     private var sinceLastWrite = Date.distantPast
     private var consecutiveFailures = 0
 
@@ -202,6 +207,14 @@ final class Chaser: NSObject, ObservableObject {
         }
         fixAge = Date().timeIntervalSince(lastFixAt)
         accuracyMeters = lastFixAccuracy
+
+        if Date().timeIntervalSince(lastStatusLog) > 10 {
+            lastStatusLog = Date()
+            DiagLog.shared.log(String(format: "chase: %.0f m along · %.0f m behind · "
+                                      + "%.0f mph · %.0f m GPS · %d writes",
+                                      cursor, gapMeters, reportedSpeedKmh / 1.609344,
+                                      lastFixAccuracy, writeCount))
+        }
     }
 
     private func maybeWrite() {
@@ -241,27 +254,41 @@ final class Chaser: NSObject, ObservableObject {
 
     private func append(_ location: CLLocation) {
         let coordinate = location.coordinate
+        let now = Date()
 
         guard let last = path.last else {
             path.append(coordinate)
             lengths = [0]
+            lastAcceptedAt = now
             return
         }
 
         let step = Geo.distance(last, coordinate)
-        guard step > 0.75 else { return }      // ignore receiver wobble while stationary
+        if step <= 0.75 { return }          // receiver wobble while stationary
 
-        // Reject an impossible jump: a bad fix can teleport a kilometre and would drag
-        // the whole path with it. Allowed speed is generous, this is not the cap.
-        let sinceLast = Date().timeIntervalSince(lastFixAt)
-        if sinceLast > 0, step / sinceLast > 60, sinceLast < 4 {
-            DiagLog.shared.log("chase: ignored an implausible fix (\(Int(step)) m in "
-                               + String(format: "%.1f", sinceLast) + " s)")
+        let gap = now.timeIntervalSince(lastAcceptedAt)
+        // 60 m/s is 216 km/h: far above any cap, so a fix this fast is a jump, not travel.
+        if gap > 0.5, step / gap > 60 {
+            if gap > 6 || step > 400 {
+                // Radio cycling or a GPS re-acquisition: this is a new anchor, not a jump
+                // to reject. Start the path here instead of refusing every fix after it.
+                path = [coordinate]
+                lengths = [0]
+                cursor = 0
+                gapMeters = 0
+                lastAcceptedAt = now
+                DiagLog.shared.note("chase: re-anchored after a "
+                                    + String(format: "%.0f", gap) + " s gap")
+                return
+            }
+            DiagLog.shared.log("chase: ignored a jump (\(Int(step)) m in "
+                               + String(format: "%.1f", gap) + " s)")
             return
         }
 
         path.append(coordinate)
         lengths.append((lengths.last ?? 0) + step)
+        lastAcceptedAt = now
         if path.count > 6000 { compact(keeping: 2000) }
     }
 
